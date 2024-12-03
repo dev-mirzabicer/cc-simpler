@@ -10,7 +10,7 @@
 
 // Instantiate modules
 InterESPCommunication interESPComm;
-RemoteCommunication remoteComm;
+RemoteCommunication remoteComm(17, 16); // TX_PIN = 17, RX_PIN = 16
 DataAggregator dataAggregator;
 StateEstimator stateEstimator;
 LocalPathAdjuster localPathAdjuster;
@@ -104,7 +104,7 @@ void setup()
 
     // Initialize all modules
     interESPComm.init();
-    remoteComm.init();
+    remoteComm.init(CommunicationMethod::Acoustic);
     dataAggregator.init(&interESPComm);
     stateEstimator.init();
     localPathAdjuster.init();
@@ -179,7 +179,7 @@ void setup()
 
 void loop()
 {
-    // The loop remains empty as tasks are managed by FreeRTOS
+    remoteComm.processIncomingData();
     vTaskDelay(portMAX_DELAY);
 }
 

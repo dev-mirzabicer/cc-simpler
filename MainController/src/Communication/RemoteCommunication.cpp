@@ -1,38 +1,73 @@
+// Communication/RemoteCommunication.cpp
 #include "RemoteCommunication.h"
 
-// Define constants for message parsing
-#define MESSAGE_START_BYTE 0xAA
-#define MAX_MESSAGE_SIZE 512 // Adjust as needed based on maximum expected payload
-
 // Constructor
-RemoteCommunication::RemoteCommunication()
-    : receiveState(ReceiveState::WAIT_START),
-      currentMessageType(0),
-      currentPayloadLength(0),
-      payloadIndex(0),
-      receivedChecksum(0),
-      tempChecksum(0),
-      headerBytesRead(0),
-      checksumBytesRead(0)
-{
-    // Initialize AES key securely
-    // Example: Use a secure method to set the key, such as reading from non-volatile memory or secure storage
-    // For demonstration, we'll use a predefined key
-    const char *secureKey = AES_KEY; // Ensure AES_KEY is defined securely
-    memcpy(aes_key, secureKey, sizeof(aes_key));
+RemoteCommunication::RemoteCommunication(uint8_t acousticTxPin, uint8_t acousticRxPin)
+    : acousticComm(acousticTxPin, acousticRxPin), commMethod(CommunicationMethod::I2C) {}
 
-    // Initialize Reed-Solomon with appropriate parameters
-    // Example: RS(255, 223) for standard RS-255/223
+// Initialize RemoteCommunication with selected method
+void RemoteCommunication::init(CommunicationMethod method)
+{
+    std::lock_guard<std::mutex> lock(commMutex);
+
+    // Initialize I2C communication
+    interESPComm.init();
+
+    // Initialize Acoustic Communication
+    acousticComm.init();
+
+    // Initialize encryption key securely
+    // Replace "1234567890abcdef" with a secure key in production
+    memcpy(aes_key, AES_KEY, sizeof(aes_key));
+
+    // Initialize Reed-Solomon with standard parameters (RS(255,223))
     rs.init(255, 223);
+
+    // Set communication method
+    setCommunicationMethod(method);
+
+    Serial.println("RemoteCommunication initialized.");
 }
 
-// Initialize acoustic communication
-void RemoteCommunication::init()
+// Set communication method
+void RemoteCommunication::setCommunicationMethod(CommunicationMethod method)
 {
-    // Initialize acoustic communication hardware (e.g., sonar sensors)
-    // Configure TX and RX pins if necessary
-    // Example: initialize serial communication for acoustic modem
-    Serial1.begin(REMOTE_COMM_BAUD_RATE, SERIAL_8N1, RX_PIN, TX_PIN);
+    std::lock_guard<std::mutex> lock(commMutex);
+    commMethod = method;
+    if (commMethod == CommunicationMethod::I2C)
+    {
+        Serial.println("Communication method set to I2C.");
+    }
+    else if (commMethod == CommunicationMethod::Acoustic)
+    {
+        Serial.println("Communication method set to Acoustic.");
+    }
+}
+
+// Calculate CRC16 checksum
+uint16_t RemoteCommunication::calculateCRC16(const uint8_t *data, size_t length)
+{
+    uint16_t crc = 0xFFFF; // Initial value
+
+    for (size_t i = 0; i < length; ++i)
+    {
+        crc ^= (uint16_t)data[i] << 8;
+        for (uint8_t j = 0; j < 8; ++j)
+        {
+            if (crc & 0x8000)
+                crc = (crc << 1) ^ CRC16_POLY;
+            else
+                crc = crc << 1;
+        }
+    }
+    return crc;
+}
+
+// Verify CRC16 checksum
+bool RemoteCommunication::verifyCRC16Checksum(uint8_t *data, size_t length, uint16_t checksum)
+{
+    uint16_t computed = calculateCRC16(data, length);
+    return (computed == checksum);
 }
 
 // Serialize State into byte buffer
@@ -43,7 +78,7 @@ void RemoteCommunication::serializeState(const State &state, uint8_t *buffer, si
     length = sizeof(State);
 }
 
-// Deserialize Path from byte buffer
+// Deserialize Path from buffer
 bool RemoteCommunication::deserializePath(const uint8_t *buffer, size_t length, Path &path)
 {
     if (length < sizeof(Waypoint))
@@ -65,7 +100,7 @@ bool RemoteCommunication::deserializePath(const uint8_t *buffer, size_t length, 
     return true;
 }
 
-// Deserialize OccupancyGrid from byte buffer
+// Deserialize OccupancyGrid from buffer
 bool RemoteCommunication::deserializeOccupancyGrid(const uint8_t *buffer, size_t length, OccupancyGrid &grid)
 {
     if (length < sizeof(int) * 3 + sizeof(float))
@@ -83,7 +118,7 @@ bool RemoteCommunication::deserializeOccupancyGrid(const uint8_t *buffer, size_t
     size_t dataLength = length - dataStart;
 
     // Prevent buffer overflow
-    if (dataLength > (MAX_MESSAGE_SIZE - dataStart))
+    if (dataLength > (AC_MAX_MESSAGE_SIZE - dataStart))
     {
         Serial.println("OccupancyGrid data size exceeds buffer limits");
         return false;
@@ -98,247 +133,251 @@ bool RemoteCommunication::deserializeOccupancyGrid(const uint8_t *buffer, size_t
     return true;
 }
 
-// Calculate CRC16 checksum
-uint16_t RemoteCommunication::calculateCRC16Checksum(const uint8_t *data, size_t length)
+// Send State data to Remote Computer via selected communication method
+bool RemoteCommunication::sendState(const State &state)
 {
-    return calculateCRC16(data, length);
-}
+    std::lock_guard<std::mutex> lock(commMutex);
 
-// Verify CRC16 checksum
-bool RemoteCommunication::verifyCRC16Checksum(uint8_t *data, size_t length, uint16_t checksum)
-{
-    uint16_t computed = calculateCRC16Checksum(data, length);
-    return (computed == checksum);
-}
-
-// Send State data to Remote Computer
-void RemoteCommunication::sendState(const State &state)
-{
-    uint8_t buffer[MAX_MESSAGE_SIZE];
+    uint8_t buffer[AC_MAX_MESSAGE_SIZE];
     size_t length = 0;
     serializeState(state, buffer, length);
 
     // Encrypt data
-    byte encryptedData[MAX_MESSAGE_SIZE];
-    {
-        std::lock_guard<std::mutex> lock(encryptionMutex);
-        aesLib.encrypt(encryptedData, buffer, length, aes_key);
-    }
+    byte encryptedData[AC_MAX_MESSAGE_SIZE];
+    aesLib.encrypt(encryptedData, buffer, length, aes_key);
 
     // Apply Reed-Solomon encoding
-    byte encodedData[MAX_MESSAGE_SIZE + 10]; // 10-byte parity (example)
+    byte encodedData[AC_MAX_MESSAGE_SIZE + 32]; // RS(255,223) adds 32 parity bytes
     size_t encodedLength = rs.encode(encodedData, encryptedData, length);
     if (encodedLength == 0)
     {
         Serial.println("Reed-Solomon encoding failed for State");
-        return;
+        return false;
     }
 
     // Compute CRC16 checksum
-    uint16_t checksum = calculateCRC16Checksum(encodedData, encodedLength);
+    uint16_t checksum = calculateCRC16(encodedData, encodedLength);
 
     // Prepare message
-    Message msg;
-    msg.startByte = MESSAGE_START_BYTE;
-    msg.type = MessageType::STATUS_UPDATE; // Assuming sending status; adjust as needed
+    AcousticMessage msg;
+    msg.startByte = AC_START_BYTE;
+    msg.type = AcousticMessageType::DATA;
     msg.length = encodedLength;
     memset(msg.payload, 0, sizeof(msg.payload));
     memcpy(msg.payload, encodedData, encodedLength);
     msg.checksum = checksum;
 
-    // Transmit data via Serial1 (acoustic modem)
-    Serial1.write((uint8_t *)&msg, sizeof(Message));
+    // Send message via selected communication method
+    if (commMethod == CommunicationMethod::I2C)
+    {
+        // Existing I2C send logic
+        // Assuming MotorController expects VelocityCommand, adapt accordingly
+        // For State, perhaps implement a different I2C message type
+        // Placeholder: Send as VelocityCommand with state data
+        // You may need to define a new message type for State if necessary
+        VelocityCommand cmd;
+        // Populate cmd with relevant state data if applicable
+        // Otherwise, implement a separate method for sending State via I2C
+        // For now, returning false as it's not defined
+        Serial.println("I2C sendState not implemented.");
+        return false;
+    }
+    else if (commMethod == CommunicationMethod::Acoustic)
+    {
+        return acousticComm.sendMessage(msg);
+    }
+
+    return false;
 }
 
-// Process any received commands
-void RemoteCommunication::processReceivedCommands()
+// Send VelocityCommand to Motor Controller via selected communication method
+bool RemoteCommunication::sendVelocityCommand(const VelocityCommand &cmd)
 {
-    while (Serial1.available() > 0)
+    std::lock_guard<std::mutex> lock(commMutex);
+
+    // Serialize VelocityCommand into byte buffer
+    uint8_t buffer[AC_MAX_MESSAGE_SIZE];
+    size_t length = sizeof(VelocityCommand);
+    memcpy(buffer, &cmd, sizeof(VelocityCommand));
+
+    // Encrypt data
+    byte encryptedData[AC_MAX_MESSAGE_SIZE];
+    aesLib.encrypt(encryptedData, buffer, length, aes_key);
+
+    // Apply Reed-Solomon encoding
+    byte encodedData[AC_MAX_MESSAGE_SIZE + 32]; // RS(255,223) adds 32 parity bytes
+    size_t encodedLength = rs.encode(encodedData, encryptedData, length);
+    if (encodedLength == 0)
     {
-        uint8_t byte = Serial1.read();
+        Serial.println("Reed-Solomon encoding failed for VelocityCommand");
+        return false;
+    }
 
-        switch (receiveState)
+    // Compute CRC16 checksum
+    uint16_t checksum = calculateCRC16(encodedData, encodedLength);
+
+    // Prepare message
+    AcousticMessage msg;
+    msg.startByte = AC_START_BYTE;
+    msg.type = AcousticMessageType::COMMAND;
+    msg.length = encodedLength;
+    memset(msg.payload, 0, sizeof(msg.payload));
+    memcpy(msg.payload, encodedData, encodedLength);
+    msg.checksum = checksum;
+
+    // Send message via selected communication method
+    if (commMethod == CommunicationMethod::I2C)
+    {
+        // Existing I2C send logic
+        bool success = interESPComm.sendVelocityCommand(cmd);
+        if (success)
         {
-        case ReceiveState::WAIT_START:
-            if (byte == MESSAGE_START_BYTE)
+            Serial.println("VelocityCommand sent via I2C.");
+        }
+        else
+        {
+            Serial.println("Failed to send VelocityCommand via I2C.");
+        }
+        return success;
+    }
+    else if (commMethod == CommunicationMethod::Acoustic)
+    {
+        return acousticComm.sendMessage(msg);
+    }
+
+    return false;
+}
+
+// Receive Status from Motor Controller via selected communication method
+bool RemoteCommunication::receiveStatus(Status &status)
+{
+    std::lock_guard<std::mutex> lock(commMutex);
+
+    if (commMethod == CommunicationMethod::I2C)
+    {
+        // Existing I2C receive logic
+        return interESPComm.receiveStatus(status);
+    }
+    else if (commMethod == CommunicationMethod::Acoustic)
+    {
+        // Acoustic communication receive logic
+        AcousticMessage msg;
+        bool received = acousticComm.receiveMessage(msg);
+        if (received && msg.type == AcousticMessageType::DATA)
+        {
+            // Assuming Status is sent as DATA message
+            // Decrypt data
+            byte decryptedData[AC_MAX_MESSAGE_SIZE];
+            aesLib.decrypt(decryptedData, msg.payload, msg.length, aes_key);
+
+            // Reed-Solomon decoding
+            byte decodedData[AC_MAX_MESSAGE_SIZE];
+            size_t decodedLength = rs.decode(decodedData, decryptedData, msg.length);
+            if (decodedLength == 0)
             {
-                receiveState = ReceiveState::RECEIVE_HEADER;
-                currentMessageType = 0;
-                currentPayloadLength = 0;
-                payloadIndex = 0;
-                memset(payloadBuffer, 0, sizeof(payloadBuffer));
-                receivedChecksum = 0;
-                tempChecksum = 0;
-                headerBytesRead = 0;
-                checksumBytesRead = 0;
+                Serial.println("Reed-Solomon decoding failed for Status");
+                return false;
             }
-            break;
 
-        case ReceiveState::RECEIVE_HEADER:
-            // Read MessageType (1 byte) and Length (2 bytes)
-            if (headerBytesRead == 0)
+            // Deserialize Status
+            if (decodedLength < sizeof(Status))
             {
-                currentMessageType = byte;
-                headerBytesRead++;
+                Serial.println("Deserialized Status size mismatch.");
+                return false;
             }
-            else if (headerBytesRead == 1)
-            {
-                currentPayloadLength = byte;
-                headerBytesRead++;
-            }
-            else if (headerBytesRead == 2)
-            {
-                currentPayloadLength |= ((uint16_t)byte << 8);
-                headerBytesRead++;
-                if (currentPayloadLength > MAX_PAYLOAD_SIZE)
-                {
-                    Serial.println("Payload length exceeds maximum limit. Discarding message.");
-                    receiveState = ReceiveState::WAIT_START;
-                }
-                else
-                {
-                    receiveState = ReceiveState::RECEIVE_PAYLOAD;
-                }
-            }
-            break;
-
-        case ReceiveState::RECEIVE_PAYLOAD:
-            payloadBuffer[payloadIndex++] = byte;
-            if (payloadIndex >= currentPayloadLength)
-            {
-                receiveState = ReceiveState::RECEIVE_CHECKSUM;
-            }
-            break;
-
-        case ReceiveState::RECEIVE_CHECKSUM:
-            // Read checksum (2 bytes)
-            tempChecksum |= ((uint16_t)byte << (8 * checksumBytesRead));
-            checksumBytesRead++;
-            if (checksumBytesRead >= 2)
-            {
-                // Verify checksum
-                if (verifyCRC16Checksum(payloadBuffer, currentPayloadLength, tempChecksum))
-                {
-                    // Decode Reed-Solomon
-                    byte decodedData[MAX_MESSAGE_SIZE];
-                    size_t decodedLength = rs.decode(decodedData, payloadBuffer, currentPayloadLength);
-                    if (decodedLength == 0)
-                    {
-                        Serial.println("Reed-Solomon decoding failed.");
-                        // Reset state
-                        receiveState = ReceiveState::WAIT_START;
-                        checksumBytesRead = 0;
-                        tempChecksum = 0;
-                        break;
-                    }
-
-                    // Decrypt data
-                    byte decryptedData[MAX_MESSAGE_SIZE];
-                    {
-                        std::lock_guard<std::mutex> lock(encryptionMutex);
-                        aesLib.decrypt(decryptedData, decodedData, decodedLength, aes_key);
-                    }
-
-                    // Dispatch based on MessageType
-                    switch (static_cast<MessageType>(currentMessageType))
-                    {
-                    case MessageType::PATH_UPDATE:
-                    {
-                        Path receivedPath;
-                        if (deserializePath(decryptedData, decodedLength, receivedPath))
-                        {
-                            // Enqueue the received path
-                            {
-                                std::lock_guard<std::mutex> lock(pathQueueMutex);
-                                if (pathQueueInternal.size() < 10) // Limit queue size
-                                {
-                                    pathQueueInternal.push(receivedPath);
-                                    Serial.println("Path received and enqueued successfully.");
-                                }
-                                else
-                                {
-                                    Serial.println("Path queue is full. Dropping received path.");
-                                }
-                            }
-                        }
-                        else
-                        {
-                            Serial.println("Failed to deserialize Path data.");
-                        }
-                        break;
-                    }
-                    case MessageType::OCCUPANCY_GRID:
-                    {
-                        OccupancyGrid receivedGrid;
-                        if (deserializeOccupancyGrid(decryptedData, decodedLength, receivedGrid))
-                        {
-                            // Enqueue the received occupancy grid
-                            {
-                                std::lock_guard<std::mutex> lock(gridQueueMutex);
-                                if (gridQueueInternal.size() < 10) // Limit queue size
-                                {
-                                    gridQueueInternal.push(receivedGrid);
-                                    Serial.println("OccupancyGrid received and enqueued successfully.");
-                                }
-                                else
-                                {
-                                    Serial.println("OccupancyGrid queue is full. Dropping received grid.");
-                                }
-                            }
-                        }
-                        else
-                        {
-                            Serial.println("Failed to deserialize OccupancyGrid data.");
-                        }
-                        break;
-                    }
-                    default:
-                        Serial.println("Received unsupported message type.");
-                        break;
-                    }
-                }
-                else
-                {
-                    Serial.println("Checksum mismatch. Discarding message.");
-                }
-
-                // Reset state
-                receiveState = ReceiveState::WAIT_START;
-                checksumBytesRead = 0;
-                tempChecksum = 0;
-            }
-            break;
-
-        default:
-            // Unknown state, reset
-            receiveState = ReceiveState::WAIT_START;
-            break;
+            memcpy(&status, decodedData, sizeof(Status));
+            return true;
         }
     }
+
+    return false;
 }
 
-// Receive Path from Remote Computer
+// Receive Path from Remote Computer via selected communication method
 bool RemoteCommunication::receivePath(Path &path)
 {
-    std::lock_guard<std::mutex> lock(pathQueueMutex);
-    if (!pathQueueInternal.empty())
+    std::lock_guard<std::mutex> lock(commMutex);
+
+    if (commMethod == CommunicationMethod::I2C)
     {
-        path = pathQueueInternal.front();
-        pathQueueInternal.pop();
-        return true;
+        // Existing I2C receive logic
+        // Placeholder: Implement based on your I2C protocol
+        Serial.println("I2C receivePath not implemented.");
+        return false;
     }
+    else if (commMethod == CommunicationMethod::Acoustic)
+    {
+        // Acoustic communication receive logic
+        AcousticMessage msg;
+        bool received = acousticComm.receiveMessage(msg);
+        if (received && msg.type == AcousticMessageType::DATA)
+        {
+            // Decrypt data
+            byte decryptedData[AC_MAX_MESSAGE_SIZE];
+            aesLib.decrypt(decryptedData, msg.payload, msg.length, aes_key);
+
+            // Reed-Solomon decoding
+            byte decodedData[AC_MAX_MESSAGE_SIZE];
+            size_t decodedLength = rs.decode(decodedData, decryptedData, msg.length);
+            if (decodedLength == 0)
+            {
+                Serial.println("Reed-Solomon decoding failed for Path");
+                return false;
+            }
+
+            // Deserialize Path
+            return deserializePath(decodedData, decodedLength, path);
+        }
+    }
+
     return false;
 }
 
-// Receive OccupancyGrid from Remote Computer
+// Receive OccupancyGrid from Remote Computer via selected communication method
 bool RemoteCommunication::receiveOccupancyGrid(OccupancyGrid &grid)
 {
-    std::lock_guard<std::mutex> lock(gridQueueMutex);
-    if (!gridQueueInternal.empty())
+    std::lock_guard<std::mutex> lock(commMutex);
+
+    if (commMethod == CommunicationMethod::I2C)
     {
-        grid = gridQueueInternal.front();
-        gridQueueInternal.pop();
-        return true;
+        // Existing I2C receive logic
+        // Placeholder: Implement based on your I2C protocol
+        Serial.println("I2C receiveOccupancyGrid not implemented.");
+        return false;
     }
+    else if (commMethod == CommunicationMethod::Acoustic)
+    {
+        // Acoustic communication receive logic
+        AcousticMessage msg;
+        bool received = acousticComm.receiveMessage(msg);
+        if (received && msg.type == AcousticMessageType::DATA)
+        {
+            // Decrypt data
+            byte decryptedData[AC_MAX_MESSAGE_SIZE];
+            aesLib.decrypt(decryptedData, msg.payload, msg.length, aes_key);
+
+            // Reed-Solomon decoding
+            byte decodedData[AC_MAX_MESSAGE_SIZE];
+            size_t decodedLength = rs.decode(decodedData, decryptedData, msg.length);
+            if (decodedLength == 0)
+            {
+                Serial.println("Reed-Solomon decoding failed for OccupancyGrid");
+                return false;
+            }
+
+            // Deserialize OccupancyGrid
+            return deserializeOccupancyGrid(decodedData, decodedLength, grid);
+        }
+    }
+
     return false;
+}
+
+// Process incoming acoustic data (to be called in the main loop)
+void RemoteCommunication::processIncomingData()
+{
+    if (commMethod == CommunicationMethod::Acoustic)
+    {
+        acousticComm.processIncomingData();
+    }
 }

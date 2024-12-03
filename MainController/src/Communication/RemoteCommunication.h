@@ -1,42 +1,61 @@
+// Communication/RemoteCommunication.h
 #ifndef REMOTECOMMUNICATION_H
 #define REMOTECOMMUNICATION_H
 
 #include <Arduino.h>
+#include "InterESPCommunication.h"
+#include "AcousticComm.h" // Include AcousticComm
 #include "../Utils/Message.h"
 #include <AESLib.h>
 #include <ReedSolomon.h>
 #include <mutex>
 #include <queue>
 
+// Define communication method enumeration
+enum class CommunicationMethod
+{
+    I2C,
+    Acoustic
+};
+
 class RemoteCommunication
 {
 public:
-    RemoteCommunication();
-    void init();
-    void sendState(const State &state);
-    void processReceivedCommands();
+    RemoteCommunication(uint8_t acousticTxPin = 17, uint8_t acousticRxPin = 16);
+    void init(CommunicationMethod method = CommunicationMethod::I2C);
+    void setCommunicationMethod(CommunicationMethod method);
+
+    // Methods to send and receive data
+    bool sendState(const State &state);
+    bool sendVelocityCommand(const VelocityCommand &cmd);
+    bool receiveStatus(Status &status);
     bool receivePath(Path &path);
     bool receiveOccupancyGrid(OccupancyGrid &grid);
-    // Additional methods as needed
+
+    // Acoustic communication processing
+    void processIncomingData(); // To be called frequently in the main loop
 
 private:
+    // Communication method
+    CommunicationMethod commMethod;
+
+    // I2C Communication
+    InterESPCommunication interESPComm;
+
+    // Acoustic Communication
+    AcousticComm acousticComm;
+
     // Encryption
     AESLib aesLib;
-    byte aes_key[16]; // 16-byte AES key
+    byte aes_key[16];
 
     // Reed-Solomon
     ReedSolomon rs;
 
-    // Acoustic communication pins (example)
-    const uint8_t TX_PIN = 17; // Transmit pin
-    const uint8_t RX_PIN = 16; // Receive pin
+    // Mutex for thread safety
+    std::mutex commMutex;
 
-    // Mutexes for thread safety
-    std::mutex encryptionMutex;
-    std::mutex pathQueueMutex;
-    std::mutex gridQueueMutex;
-
-    // Internal queues to store received paths and occupancy grids
+    // Internal queues for received data
     std::queue<Path> pathQueueInternal;
     std::queue<OccupancyGrid> gridQueueInternal;
 
@@ -47,25 +66,8 @@ private:
     uint16_t calculateCRC16Checksum(const uint8_t *data, size_t length);
     bool verifyCRC16Checksum(uint8_t *data, size_t length, uint16_t checksum);
 
-    // Message parsing state
-    enum class ReceiveState
-    {
-        WAIT_START,
-        RECEIVE_HEADER,
-        RECEIVE_PAYLOAD,
-        RECEIVE_CHECKSUM
-    } receiveState;
-
-    uint8_t currentMessageType;
-    uint16_t currentPayloadLength;
-    uint8_t payloadBuffer[MAX_PAYLOAD_SIZE];
-    uint16_t receivedChecksum;
-    size_t payloadIndex;
-
-    // Helper variables
-    uint16_t tempChecksum;
-    int headerBytesRead;
-    int checksumBytesRead;
+    // CRC16 calculation
+    uint16_t calculateCRC16(const uint8_t *data, size_t length);
 };
 
 #endif // REMOTECOMMUNICATION_H
