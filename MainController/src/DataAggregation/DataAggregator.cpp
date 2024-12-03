@@ -67,8 +67,7 @@ SensorData DataAggregator::collectData()
     {
         Serial.println("Failed to receive sensor data from one or more controllers.");
         // Implement fallback: Use the last known good data
-        // Assuming aggregatedData holds the last good data
-        // Alternatively, reset aggregatedData or mark it as invalid
+        // aggregatedData holds the last good data
     }
 
     return aggregatedData;
@@ -76,7 +75,6 @@ SensorData DataAggregator::collectData()
 
 void DataAggregator::mergeSensorData(const SensorData &newData1, const SensorData &newData2)
 {
-    // Assuming:
     // - Controller 1 provides IMU, Magnetometer, and Sonar data
     // - Controller 2 provides Pressure data
 

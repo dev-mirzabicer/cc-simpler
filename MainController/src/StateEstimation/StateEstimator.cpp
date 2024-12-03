@@ -110,7 +110,7 @@ void StateEstimator::processModel(float *x, const float *u, float dt)
         x[8] += 360.0f;
 
     // Update angular velocities based on angular acceleration (if modeled)
-    // Assuming angular accelerations are controlled via commands
+    // angular accelerations are controlled via commands
     // If not, set angular velocities based on control inputs
     x[12] = u[3]; // angularVx
     x[13] = u[4]; // angularVy

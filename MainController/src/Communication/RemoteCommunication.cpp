@@ -87,7 +87,7 @@ bool RemoteCommunication::deserializePath(const uint8_t *buffer, size_t length, 
         return false;
     }
 
-    // Assuming the buffer contains a series of waypoints
+    // The buffer contains a series of waypoints
     size_t numWaypoints = length / sizeof(Waypoint);
     path.waypoints.clear();
     for (size_t i = 0; i < numWaypoints; ++i)
@@ -170,15 +170,7 @@ bool RemoteCommunication::sendState(const State &state)
     // Send message via selected communication method
     if (commMethod == CommunicationMethod::I2C)
     {
-        // Existing I2C send logic
-        // Assuming MotorController expects VelocityCommand, adapt accordingly
-        // For State, perhaps implement a different I2C message type
-        // Placeholder: Send as VelocityCommand with state data
-        // You may need to define a new message type for State if necessary
         VelocityCommand cmd;
-        // Populate cmd with relevant state data if applicable
-        // Otherwise, implement a separate method for sending State via I2C
-        // For now, returning false as it's not defined
         Serial.println("I2C sendState not implemented.");
         return false;
     }
@@ -265,7 +257,7 @@ bool RemoteCommunication::receiveStatus(Status &status)
         bool received = acousticComm.receiveMessage(msg);
         if (received && msg.type == AcousticMessageType::DATA)
         {
-            // Assuming Status is sent as DATA message
+            // Status is sent as DATA message
             // Decrypt data
             byte decryptedData[AC_MAX_MESSAGE_SIZE];
             aesLib.decrypt(decryptedData, msg.payload, msg.length, aes_key);
@@ -300,8 +292,6 @@ bool RemoteCommunication::receivePath(Path &path)
 
     if (commMethod == CommunicationMethod::I2C)
     {
-        // Existing I2C receive logic
-        // Placeholder: Implement based on your I2C protocol
         Serial.println("I2C receivePath not implemented.");
         return false;
     }
@@ -340,8 +330,6 @@ bool RemoteCommunication::receiveOccupancyGrid(OccupancyGrid &grid)
 
     if (commMethod == CommunicationMethod::I2C)
     {
-        // Existing I2C receive logic
-        // Placeholder: Implement based on your I2C protocol
         Serial.println("I2C receiveOccupancyGrid not implemented.");
         return false;
     }

@@ -58,7 +58,7 @@ float PumpController::readSensor() const
 {
     // Example implementation: read analog value and map to pump status
     int sensorValue = analogRead(sensorPin);
-    // Assuming sensorValue ranges from 0-4095 (12-bit ADC)
+    // sensorValue ranges from 0-4095 (12-bit ADC)
     float voltage = sensorValue * (3.3f / 4095.0f); // Convert to voltage
     // Map voltage to pump status (m/s) based on calibration
     float status = mapFloat(clamp(voltage, 0.0f, 3.3f), 0.0f, 3.3f, minControl, maxControl);

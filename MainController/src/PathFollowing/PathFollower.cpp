@@ -93,7 +93,7 @@ VelocityCommand PathFollower::followPath(const State &currentState, const Path &
         errorYaw += 360.0f;
 
     // Compute time step (dt)
-    float dt = 0.1f; // Assuming 10 Hz loop rate; adjust as necessary
+    float dt = 0.1f; // 10 Hz loop rate
 
     // PID control for linear velocities
     float controlX = pidLinearX.compute(errorX, currentState.x, dt);
@@ -101,8 +101,8 @@ VelocityCommand PathFollower::followPath(const State &currentState, const Path &
     float controlZ = pidLinearZ.compute(errorZ, currentState.z, dt);
 
     // PID control for angular velocities using angular rates
-    float controlRoll = pidAngularX.compute(0.0f, currentState.roll, dt);   // Assuming target roll is 0
-    float controlPitch = pidAngularY.compute(0.0f, currentState.pitch, dt); // Assuming target pitch is 0
+    float controlRoll = pidAngularX.compute(0.0f, currentState.roll, dt);   // target roll is 0
+    float controlPitch = pidAngularY.compute(0.0f, currentState.pitch, dt); // target pitch is 0
     float controlYaw = pidAngularZ.compute(errorYaw, currentState.yaw, dt);
 
     // Assign controls to command

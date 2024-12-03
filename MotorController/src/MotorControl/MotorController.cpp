@@ -38,7 +38,7 @@ MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityComm
 {
     MotorCommand motorCmd;
     // Differential drive mapping
-    // Assuming angularZ controls yaw by adjusting left and right motor speeds inversely
+    // angularZ controls yaw by adjusting left and right motor speeds inversely
     motorCmd.leftMotorSpeed = clamp(velCmd.linearX - velCmd.angularZ, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
     motorCmd.rightMotorSpeed = clamp(velCmd.linearX + velCmd.angularZ, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
 
@@ -55,7 +55,7 @@ void MotorControllerModule::update(const VelocityCommand &commands)
     MotorCommand motorCmd = mapVelocityToMotorCommand(commands);
 
     // Define time delta (dt) for PID computation
-    float dt = 0.1f; // Assuming update is called at 10 Hz
+    float dt = 0.1f; // update is called at 10 Hz
 
     // Apply Motor Commands with PID control
     applyMotorCommands(motorCmd, dt);

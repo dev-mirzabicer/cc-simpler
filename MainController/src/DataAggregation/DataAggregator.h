@@ -6,7 +6,6 @@
 #include "../Communication/InterESPCommunication.h"
 #include <mutex> // Include mutex for thread safety
 
-// Assuming the use of FreeRTOS; include necessary headers
 #ifdef FREERTOS_ENABLED
 #include <mutex>
 #endif

@@ -160,8 +160,8 @@ void AcousticComm::processIncomingData()
         case ReceiveState::WAIT_START:
             if (bitValue)
             { // Start byte is 0xAA -> 10101010
-                // Assuming start byte starts with '1'
-                // To simplify, start detecting after first '1'
+                // Start byte starts with '1'
+                // Start detecting after first '1'
                 currentMsg.startByte = (currentMsg.startByte << 1) | bitValue;
                 if (currentMsg.startByte == AC_START_BYTE)
                 {
