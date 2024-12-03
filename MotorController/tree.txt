@@ -1,0 +1,1032 @@
+.
+  .DS_Store
+    ---- File Content ----
+    [Binary File - Content Not Displayed]
+  include
+    Utils
+      Utilities.h
+        ---- File Content ----
+        #ifndef UTILITIES_H
+        #define UTILITIES_H
+        
+        #include <Arduino.h>
+        
+        // Clamp a value between min and max
+        inline float clamp(float value, float minVal, float maxVal)
+        {
+        if (value < minVal)
+        return minVal;
+        if (value > maxVal)
+        return maxVal;
+        return value;
+        }
+        
+        // Map a float from one range to another
+        inline float mapFloat(float x, float in_min, float in_max, float out_min, float out_max)
+        {
+        return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+        }
+        
+        #endif // UTILITIES_H
+        ---------------------
+      Message.h
+        ---- File Content ----
+        #ifndef MESSAGE_H
+        #define MESSAGE_H
+        
+        #include <Arduino.h>
+        #include <vector>
+        
+        // Define maximum payload size
+        #define MAX_PAYLOAD_SIZE 256
+        
+        // Enumeration for message types
+        enum class MessageType
+        {
+        VELOCITY_COMMAND = 1, // Matches MainController
+        STATUS_UPDATE = 2,
+        // Add additional message types as needed
+        };
+        
+        // Struct for velocity commands
+        struct VelocityCommand
+        {
+        float linearX;  // Forward/backward movement (m/s)
+        float linearY;  // Lateral movement (m/s) - Optional
+        float linearZ;  // Vertical movement (pump control) (m/s)
+        float angularX; // Roll control (degrees/s)
+        float angularY; // Pitch control (degrees/s)
+        float angularZ; // Yaw control (degrees/s)
+        } __attribute__((packed));
+        
+        // Struct for motor commands (internal mapping)
+        struct MotorCommand
+        {
+        float leftMotorSpeed;  // Desired speed for left motor (-10 to 10 m/s)
+        float rightMotorSpeed; // Desired speed for right motor (-10 to 10 m/s)
+        float pumpControl;     // Desired pump control (-5 to 5 m/s)
+        } __attribute__((packed));
+        
+        // Struct for status updates
+        struct Status
+        {
+        bool isOperational;
+        float currentLeftMotorSpeed;  // Current speed of left motor (m/s)
+        float currentRightMotorSpeed; // Current speed of right motor (m/s)
+        float currentPumpStatus;      // Current pump status (m/s)
+        // Add additional status fields as needed
+        } __attribute__((packed));
+        
+        // Struct for messages
+        struct Message
+        {
+        uint8_t startByte;                 // Synchronization byte (e.g., 0xAA)
+        MessageType type;                  // Type of message
+        uint16_t length;                   // Length of payload
+        uint8_t payload[MAX_PAYLOAD_SIZE]; // Payload data
+        uint16_t checksum;                 // CRC16 checksum for error detection
+        } __attribute__((packed));
+        
+        // Function to calculate CRC16 checksum
+        uint16_t calculateCRC16(const uint8_t *data, size_t length);
+        
+        #endif // MESSAGE_H
+        ---------------------
+    PID
+      PIDController.h
+        ---- File Content ----
+        #ifndef PIDCONTROLLER_H
+        #define PIDCONTROLLER_H
+        
+        #include <Arduino.h>
+        #include <mutex>
+        
+        class PIDController
+        {
+        public:
+        PIDController(float kp, float ki, float kd, float integralLimit = 100.0f);
+        void init();
+        float compute(float setpoint, float measuredValue, float dt);
+        void reset();
+        
+        private:
+        float kp;
+        float ki;
+        float kd;
+        float previousError;
+        float integral;
+        float integralLimit;
+        std::mutex pidMutex;
+        };
+        
+        #endif // PIDCONTROLLER_H
+        ---------------------
+    Communication
+      InterESPCommunication.h
+        ---- File Content ----
+        #ifndef INTERESP_COMMUNICATION_H
+        #define INTERESP_COMMUNICATION_H
+        
+        #include <Arduino.h>
+        #include <Wire.h>
+        #include "../Utils/Message.h"
+        #include "../Utils/Utilities.h"
+        #include <mutex>
+        #include <queue>
+        
+        class InterESPCommunication
+        {
+        public:
+        InterESPCommunication();
+        void init();
+        bool receiveVelocityCommands(VelocityCommand &commands);
+        void sendStatus(const Status &status);
+        
+        private:
+        std::mutex i2cMutex; // Mutex for protecting I2C operations
+        
+        // Queues for storing received VelocityCommands and to be sent Status
+        std::queue<VelocityCommand> velocityCommandQueue;
+        std::queue<Status> statusQueue;
+        
+        // Helper functions
+        void handleRequest();
+        void handleReceive(int byteCount);
+        void enqueueVelocityCommand(const VelocityCommand &cmd);
+        bool dequeueVelocityCommand(VelocityCommand &cmd);
+        void enqueueStatus(const Status &status);
+        bool dequeueStatus(Status &status);
+        void serializeStatus(const Status &status, Message &msg);
+        bool deserializeVelocityCommand(const uint8_t *buffer, size_t length, VelocityCommand &commands);
+        
+        // Callback functions need to be static or use a singleton pattern
+        static InterESPCommunication *instance;
+        
+        // Static callback wrappers
+        static void onRequestWrapper();
+        static void onReceiveWrapper(int byteCount);
+        };
+        
+        #endif // INTERESP_COMMUNICATION_H
+        ---------------------
+    MotorControl
+      MotorController.h
+        ---- File Content ----
+        #ifndef MOTORCONTROLLER_H
+        #define MOTORCONTROLLER_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include "../Utils/Utilities.h"
+        #include "../PID/PIDController.h"
+        #include "MotorDriver.h"
+        #include "PumpController.h"
+        #include <mutex>
+        
+        class MotorControllerModule
+        {
+        public:
+        MotorControllerModule();
+        void init();
+        void update(const VelocityCommand &commands);
+        Status getStatus() const;
+        
+        private:
+        MotorDriver leftMotor;
+        MotorDriver rightMotor;
+        PumpController pump;
+        PIDController pidLeftMotor;
+        PIDController pidRightMotor;
+        PIDController pidPump;
+        
+        mutable std::mutex statusMutex;
+        Status currentStatus;
+        
+        // Helper functions
+        MotorCommand mapVelocityToMotorCommand(const VelocityCommand &velCmd);
+        void applyMotorCommands(const MotorCommand &motorCmd, float dt);
+        };
+        
+        #endif // MOTORCONTROLLER_H
+        ---------------------
+      MotorDriver.h
+        ---- File Content ----
+        #ifndef MOTORDRIVER_H
+        #define MOTORDRIVER_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Utilities.h"
+        #include <Encoder.h> // Include Encoder library
+        
+        class MotorDriver
+        {
+        public:
+        MotorDriver(uint8_t pwmPin, uint8_t dirPin, uint8_t encoderPinA, uint8_t encoderPinB);
+        void init();
+        void setSpeed(float speed);    // Speed in m/s (-maxSpeed to +maxSpeed)
+        float getCurrentSpeed() const; // Current speed in m/s
+        void updateSpeed(float dt);    // Update speed based on encoder counts
+        
+        private:
+        uint8_t pwmPin;
+        uint8_t dirPin;
+        Encoder encoder; // Encoder instance
+        long lastEncoderCount;
+        float currentSpeed; // Current speed in m/s
+        
+        // Calibration parameters
+        float maxSpeed; // Maximum speed in m/s corresponding to PWM=255
+        float minSpeed; // Minimum speed in m/s corresponding to PWM=0
+        
+        // Wheel and encoder parameters
+        float wheelCircumference; // In meters
+        uint16_t encoderCountsPerRev;
+        };
+        
+        #endif // MOTORDRIVER_H
+        ---------------------
+      PumpController.h
+        ---- File Content ----
+        #ifndef PUMPCONTROLLER_H
+        #define PUMPCONTROLLER_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Utilities.h"
+        
+        class PumpController
+        {
+        public:
+        PumpController(uint8_t pwmPin, uint8_t sensorPin);
+        void init();
+        void setControl(float control);     // Control in m/s (-5 to +5 m/s)
+        float getCurrentPumpStatus() const; // Current pump status in m/s
+        void updateStatus();                // Update pump status based on sensor
+        
+        private:
+        uint8_t pwmPin;
+        uint8_t sensorPin;
+        float pumpStatus; // Current pump status in m/s
+        
+        // Calibration parameters
+        float maxControl; // Maximum control in m/s corresponding to PWM=255
+        float minControl; // Minimum control in m/s corresponding to PWM=0
+        
+        // Sensor reading
+        float readSensor() const; // Read pump sensor (e.g., from ADC)
+        };
+        
+        #endif // PUMPCONTROLLER_H
+        ---------------------
+  lib
+  src
+    config.h
+      ---- File Content ----
+      #ifndef CONFIG_H
+      #define CONFIG_H
+      
+      // I2C Configuration
+      #define I2C_SDA_PIN 21
+      #define I2C_SCL_PIN 22
+      #define I2C_SLAVE_ADDRESS 0x10 // MotorController I2C Address
+      
+      // PWM Configuration
+      #define LEFT_MOTOR_PWM_PIN 18  // PWM pin for Left Motor
+      #define LEFT_MOTOR_DIR_PIN 17  // Direction pin for Left Motor
+      #define RIGHT_MOTOR_PWM_PIN 19 // PWM pin for Right Motor
+      #define RIGHT_MOTOR_DIR_PIN 16 // Direction pin for Right Motor
+      #define PUMP_PWM_PIN 5         // PWM pin for Pump
+      
+      // PID Parameters for Motors
+      #define LEFT_MOTOR_KP 1.0f
+      #define LEFT_MOTOR_KI 0.0f
+      #define LEFT_MOTOR_KD 0.1f
+      
+      #define RIGHT_MOTOR_KP 1.0f
+      #define RIGHT_MOTOR_KI 0.0f
+      #define RIGHT_MOTOR_KD 0.1f
+      
+      // PID Parameters for Pump
+      #define PUMP_KP 1.0f
+      #define PUMP_KI 0.0f
+      #define PUMP_KD 0.1f
+      
+      // FreeRTOS Task Priorities
+      #define TASK_PRIORITY_COMMUNICATION 3
+      #define TASK_PRIORITY_MOTOR_CONTROL 2
+      #define TASK_PRIORITY_LOGGING 1
+      
+      // FreeRTOS Task Stack Sizes (in words)
+      #define TASK_STACK_SIZE_COMMUNICATION 4096
+      #define TASK_STACK_SIZE_MOTOR_CONTROL 4096
+      #define TASK_STACK_SIZE_LOGGING 2048
+      
+      // PWM Frequency (in Hz)
+      #define PWM_FREQUENCY 5000 // 5 kHz for smooth motor control
+      
+      // PWM Resolution
+      #define PWM_RESOLUTION 8 // 8-bit resolution (0-255)
+      
+      // Motor Calibration Parameters
+      #define LEFT_MOTOR_MAX_SPEED 10.0f  // Maximum speed in m/s
+      #define LEFT_MOTOR_MIN_SPEED -10.0f // Minimum speed in m/s
+      
+      #define RIGHT_MOTOR_MAX_SPEED 10.0f  // Maximum speed in m/s
+      #define RIGHT_MOTOR_MIN_SPEED -10.0f // Minimum speed in m/s
+      
+      // Pump Calibration Parameters
+      #define PUMP_MAX_CONTROL 5.0f  // Maximum pump control in m/s
+      #define PUMP_MIN_CONTROL -5.0f // Minimum pump control in m/s
+      
+      // Encoder Configuration
+      #define ENCODER_LEFT_PIN_A 34  // GPIO pin for Left Motor Encoder A
+      #define ENCODER_LEFT_PIN_B 35  // GPIO pin for Left Motor Encoder B
+      #define ENCODER_RIGHT_PIN_A 32 // GPIO pin for Right Motor Encoder A
+      #define ENCODER_RIGHT_PIN_B 33 // GPIO pin for Right Motor Encoder B
+      
+      // Encoder Counts per Revolution
+      #define ENCODER_COUNTS_PER_REV 360
+      
+      // Wheel Circumference (meters)
+      #define WHEEL_CIRCUMFERENCE 0.314f // Example: 10 cm diameter wheel
+      
+      // Pump Sensor Configuration
+      #define PUMP_SENSOR_PIN 36 // Example ADC pin for Pump feedback
+      
+      // Additional global configurations
+      // e.g., safety limits, timeout durations
+      
+      #endif // CONFIG_H
+      ---------------------
+    Utils
+      Message.cpp
+        ---- File Content ----
+        #include "Message.h"
+        
+        // Polynomial for CRC-CCITT
+        #define CRC16_POLY 0x1021
+        
+        // Calculate CRC16 checksum
+        uint16_t calculateCRC16(const uint8_t *data, size_t length)
+        {
+        uint16_t crc = 0xFFFF; // Initial value
+        
+        for (size_t i = 0; i < length; ++i)
+        {
+        crc ^= (uint16_t)data[i] << 8;
+        for (uint8_t j = 0; j < 8; ++j)
+        {
+        if (crc & 0x8000)
+        crc = (crc << 1) ^ CRC16_POLY;
+        else
+        crc = crc << 1;
+        }
+        }
+        return crc;
+        }
+        ---------------------
+    PID
+      PIDController.cpp
+        ---- File Content ----
+        #include "PIDController.h"
+        
+        // Constructor
+        PIDController::PIDController(float kp_val, float ki_val, float kd_val, float integralLimit_val)
+        : kp(kp_val), ki(ki_val), kd(kd_val), previousError(0.0f), integral(0.0f), integralLimit(integralLimit_val)
+        {
+        // Initialize variables
+        }
+        
+        // Initialize PID Controller
+        void PIDController::init()
+        {
+        reset();
+        }
+        
+        // Compute PID Output
+        float PIDController::compute(float setpoint, float measuredValue, float dt)
+        {
+        std::lock_guard<std::mutex> lock(pidMutex);
+        float error = setpoint - measuredValue;
+        integral += error * dt;
+        
+        // Anti-windup
+        if (integral > integralLimit)
+        integral = integralLimit;
+        else if (integral < -integralLimit)
+        integral = -integralLimit;
+        
+        float derivative = (error - previousError) / dt;
+        previousError = error;
+        
+        return (kp * error) + (ki * integral) + (kd * derivative);
+        }
+        
+        // Reset PID Controller
+        void PIDController::reset()
+        {
+        std::lock_guard<std::mutex> lock(pidMutex);
+        previousError = 0.0f;
+        integral = 0.0f;
+        }
+        ---------------------
+    Communication
+      InterESPCommunication.cpp
+        ---- File Content ----
+        #include "InterESPCommunication.h"
+        
+        // Initialize static instance pointer
+        InterESPCommunication *InterESPCommunication::instance = nullptr;
+        
+        // Constructor
+        InterESPCommunication::InterESPCommunication()
+        {
+        if (instance == nullptr)
+        {
+        instance = this;
+        }
+        }
+        
+        // Initialize I2C as Slave and set up callbacks
+        void InterESPCommunication::init()
+        {
+        Wire.begin(I2C_SLAVE_ADDRESS);
+        Wire.onRequest([]()
+        { InterESPCommunication::onRequestWrapper(); });
+        Wire.onReceive([](int byteCount)
+        { InterESPCommunication::onReceiveWrapper(byteCount); });
+        Serial.println("InterESPCommunication initialized as I2C Slave.");
+        }
+        
+        // Static wrapper for onRequest
+        void InterESPCommunication::onRequestWrapper()
+        {
+        if (instance)
+        {
+        instance->handleRequest();
+        }
+        }
+        
+        // Static wrapper for onReceive
+        void InterESPCommunication::onReceiveWrapper(int byteCount)
+        {
+        if (instance)
+        {
+        instance->handleReceive(byteCount);
+        }
+        }
+        
+        // Handle I2C Requests (send Status updates)
+        void InterESPCommunication::handleRequest()
+        {
+        std::lock_guard<std::mutex> lock(i2cMutex);
+        if (!statusQueue.empty())
+        {
+        Status status = statusQueue.front();
+        statusQueue.pop();
+        
+        Message msg;
+        serializeStatus(status, msg);
+        Wire.write((uint8_t *)&msg, sizeof(Message));
+        Serial.println("Status message sent to MainController.");
+        }
+        else
+        {
+        // If no status to send, send a default status
+        Status defaultStatus = {true, 0.0f, 0.0f, 0.0f};
+        Message msg;
+        serializeStatus(defaultStatus, msg);
+        Wire.write((uint8_t *)&msg, sizeof(Message));
+        Serial.println("Default status message sent to MainController.");
+        }
+        }
+        
+        // Handle I2C Receives (receive VelocityCommand)
+        void InterESPCommunication::handleReceive(int byteCount)
+        {
+        std::lock_guard<std::mutex> lock(i2cMutex);
+        if (byteCount < sizeof(Message))
+        {
+        Serial.println("Received incomplete VelocityCommand message.");
+        return;
+        }
+        
+        uint8_t buffer[MAX_PAYLOAD_SIZE];
+        size_t len = Wire.readBytes(buffer, sizeof(Message));
+        
+        VelocityCommand commands;
+        bool success = deserializeVelocityCommand(buffer, len, commands);
+        if (success)
+        {
+        enqueueVelocityCommand(commands);
+        Serial.println("VelocityCommand received and enqueued.");
+        }
+        else
+        {
+        Serial.println("Failed to deserialize VelocityCommand.");
+        }
+        }
+        
+        // Enqueue received VelocityCommand
+        void InterESPCommunication::enqueueVelocityCommand(const VelocityCommand &cmd)
+        {
+        velocityCommandQueue.push(cmd);
+        }
+        
+        // Dequeue VelocityCommand for processing
+        bool InterESPCommunication::dequeueVelocityCommand(VelocityCommand &cmd)
+        {
+        if (!velocityCommandQueue.empty())
+        {
+        cmd = velocityCommandQueue.front();
+        velocityCommandQueue.pop();
+        return true;
+        }
+        return false;
+        }
+        
+        // Enqueue Status for sending
+        void InterESPCommunication::enqueueStatus(const Status &status)
+        {
+        statusQueue.push(status);
+        }
+        
+        // Dequeue Status for sending
+        bool InterESPCommunication::dequeueStatus(Status &status)
+        {
+        if (!statusQueue.empty())
+        {
+        status = statusQueue.front();
+        statusQueue.pop();
+        return true;
+        }
+        return false;
+        }
+        
+        // Serialize Status into Message
+        void InterESPCommunication::serializeStatus(const Status &status, Message &msg)
+        {
+        msg.startByte = 0xAA; // Example start byte
+        msg.type = MessageType::STATUS_UPDATE;
+        msg.length = sizeof(Status);
+        memset(msg.payload, 0, sizeof(msg.payload));
+        memcpy(msg.payload, &status, sizeof(Status));
+        msg.checksum = calculateCRC16(msg.payload, msg.length);
+        }
+        
+        // Deserialize VelocityCommand from buffer
+        bool InterESPCommunication::deserializeVelocityCommand(const uint8_t *buffer, size_t length, VelocityCommand &commands)
+        {
+        if (length < sizeof(Message))
+        {
+        Serial.println("VelocityCommand message size mismatch.");
+        return false;
+        }
+        
+        Message msg;
+        memcpy(&msg, buffer, sizeof(Message));
+        
+        // Verify checksum
+        uint16_t computedChecksum = calculateCRC16(msg.payload, msg.length);
+        if (computedChecksum != msg.checksum)
+        {
+        Serial.println("VelocityCommand checksum mismatch.");
+        return false;
+        }
+        
+        if (msg.type != MessageType::VELOCITY_COMMAND)
+        {
+        Serial.println("Incorrect message type for VelocityCommand.");
+        return false;
+        }
+        
+        // Deserialize VelocityCommand
+        if (msg.length > sizeof(VelocityCommand))
+        {
+        Serial.println("VelocityCommand payload size mismatch.");
+        return false;
+        }
+        
+        memcpy(&commands, msg.payload, sizeof(VelocityCommand));
+        return true;
+        }
+        
+        // Receive VelocityCommand from queue
+        bool InterESPCommunication::receiveVelocityCommands(VelocityCommand &commands)
+        {
+        std::lock_guard<std::mutex> lock(i2cMutex);
+        return dequeueVelocityCommand(commands);
+        }
+        
+        // Send Status by enqueuing it to the statusQueue
+        void InterESPCommunication::sendStatus(const Status &status)
+        {
+        std::lock_guard<std::mutex> lock(i2cMutex);
+        enqueueStatus(status);
+        }
+        ---------------------
+    MotorControl
+      PumpController.cpp
+        ---- File Content ----
+        #include "PumpController.h"
+        
+        // Constructor
+        PumpController::PumpController(uint8_t pwmPin, uint8_t sensorPin)
+        : pwmPin(pwmPin), sensorPin(sensorPin),
+        pumpStatus(0.0f),
+        maxControl(PUMP_MAX_CONTROL), minControl(PUMP_MIN_CONTROL)
+        {
+        // Initialize variables
+        }
+        
+        // Initialize PumpController
+        void PumpController::init()
+        {
+        pinMode(pwmPin, OUTPUT);
+        analogWrite(pwmPin, 0);    // Initialize PWM to 0
+        pinMode(sensorPin, INPUT); // Initialize sensor pin as input
+        
+        pumpStatus = 0.0f; // Initialize pump status to neutral
+        }
+        
+        // Set control for pump (negative for suction, positive for pumping out)
+        void PumpController::setControl(float control)
+        {
+        // Clamp control to allowed range
+        control = clamp(control, minControl, maxControl);
+        
+        // Determine direction based on control sign
+        if (control >= 0.0f)
+        {
+        // Forward direction (pumping out)
+        // If direction control is required, implement accordingly
+        }
+        else
+        {
+        // Reverse direction (suction)
+        control = -control; // Make control positive for PWM mapping
+        // If direction control is required, implement accordingly
+        }
+        
+        // Map control to PWM
+        float pwmValue = mapFloat(control, 0.0f, maxControl, 0.0f, 255.0f);
+        pwmValue = clamp(pwmValue, 0.0f, 255.0f);
+        analogWrite(pwmPin, (uint8_t)pwmValue);
+        
+        // Update pumpStatus based on control
+        pumpStatus = (control > 0.0f) ? control : -control;
+        }
+        
+        // Get current pump status
+        float PumpController::getCurrentPumpStatus() const
+        {
+        return pumpStatus;
+        }
+        
+        // Read pump sensor (e.g., pressure sensor via ADC)
+        float PumpController::readSensor() const
+        {
+        // Example implementation: read analog value and map to pump status
+        int sensorValue = analogRead(sensorPin);
+        // Assuming sensorValue ranges from 0-4095 (12-bit ADC)
+        float voltage = sensorValue * (3.3f / 4095.0f); // Convert to voltage
+        // Map voltage to pump status (m/s) based on calibration
+        float status = mapFloat(clamp(voltage, 0.0f, 3.3f), 0.0f, 3.3f, minControl, maxControl);
+        return status;
+        }
+        
+        // Update pump status based on sensor readings
+        void PumpController::updateStatus()
+        {
+        pumpStatus = readSensor();
+        }
+        ---------------------
+      MotorDriver.cpp
+        ---- File Content ----
+        #include "MotorDriver.h"
+        
+        // Constructor
+        MotorDriver::MotorDriver(uint8_t pwmPin, uint8_t dirPin, uint8_t encoderPinA, uint8_t encoderPinB)
+        : pwmPin(pwmPin), dirPin(dirPin),
+        encoder(encoderPinA, encoderPinB),
+        lastEncoderCount(0), currentSpeed(0.0f),
+        maxSpeed(LEFT_MOTOR_MAX_SPEED), minSpeed(LEFT_MOTOR_MIN_SPEED),
+        wheelCircumference(WHEEL_CIRCUMFERENCE), encoderCountsPerRev(ENCODER_COUNTS_PER_REV)
+        {
+        // Initialize variables
+        }
+        
+        // Initialize MotorDriver
+        void MotorDriver::init()
+        {
+        pinMode(pwmPin, OUTPUT);
+        pinMode(dirPin, OUTPUT);
+        analogWrite(pwmPin, 0);    // Initialize PWM to 0
+        digitalWrite(dirPin, LOW); // Initialize direction to LOW
+        
+        encoder.write(0); // Reset encoder count
+        lastEncoderCount = 0;
+        currentSpeed = 0.0f;
+        }
+        
+        // Set speed for motor (negative for reverse, positive for forward)
+        void MotorDriver::setSpeed(float speed)
+        {
+        // Clamp speed to allowed range
+        speed = clamp(speed, minSpeed, maxSpeed);
+        
+        // Determine direction
+        if (speed >= 0.0f)
+        {
+        digitalWrite(dirPin, HIGH); // Forward
+        }
+        else
+        {
+        digitalWrite(dirPin, LOW); // Reverse
+        speed = -speed;            // Make speed positive for PWM mapping
+        }
+        
+        // Map speed to PWM
+        float pwmValue = mapFloat(speed, 0.0f, maxSpeed, 0.0f, 255.0f);
+        pwmValue = clamp(pwmValue, 0.0f, 255.0f);
+        analogWrite(pwmPin, (uint8_t)pwmValue);
+        
+        // Update currentSpeed based on direction
+        currentSpeed = (digitalRead(dirPin) == HIGH) ? speed : -speed;
+        }
+        
+        // Get current motor speed
+        float MotorDriver::getCurrentSpeed() const
+        {
+        return currentSpeed;
+        }
+        
+        // Update speed based on encoder counts
+        void MotorDriver::updateSpeed(float dt)
+        {
+        long currentCount = encoder.read();
+        long deltaCount = currentCount - lastEncoderCount;
+        lastEncoderCount = currentCount;
+        
+        // Calculate rotations per second
+        float rotations = (float)deltaCount / encoderCountsPerRev;
+        float speed = (rotations * wheelCircumference) / dt; // m/s
+        
+        // Update currentSpeed
+        currentSpeed = speed;
+        }
+        ---------------------
+      MotorController.cpp
+        ---- File Content ----
+        #include "MotorController.h"
+        
+        // Constructor
+        MotorControllerModule::MotorControllerModule()
+        : leftMotor(LEFT_MOTOR_PWM_PIN, LEFT_MOTOR_DIR_PIN, ENCODER_LEFT_PIN_A, ENCODER_LEFT_PIN_B),
+        rightMotor(RIGHT_MOTOR_PWM_PIN, RIGHT_MOTOR_DIR_PIN, ENCODER_RIGHT_PIN_A, ENCODER_RIGHT_PIN_B),
+        pump(PUMP_PWM_PIN, PUMP_SENSOR_PIN),
+        pidLeftMotor(LEFT_MOTOR_KP, LEFT_MOTOR_KI, LEFT_MOTOR_KD, 100.0f),
+        pidRightMotor(RIGHT_MOTOR_KP, RIGHT_MOTOR_KI, RIGHT_MOTOR_KD, 100.0f),
+        pidPump(PUMP_KP, PUMP_KI, PUMP_KD, 50.0f),
+        currentStatus{false, 0.0f, 0.0f, 0.0f}
+        {
+        // Initialize status as non-operational until init() is called
+        }
+        
+        // Initialize Motor Control Module
+        void MotorControllerModule::init()
+        {
+        leftMotor.init();
+        rightMotor.init();
+        pump.init();
+        
+        pidLeftMotor.init();
+        pidRightMotor.init();
+        pidPump.init();
+        
+        // Initialize status as operational
+        {
+        std::lock_guard<std::mutex> lock(statusMutex);
+        currentStatus.isOperational = true;
+        }
+        
+        Serial.println("MotorControllerModule initialized.");
+        }
+        
+        // Map VelocityCommand to MotorCommand
+        MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityCommand &velCmd)
+        {
+        MotorCommand motorCmd;
+        // Differential drive mapping
+        // Assuming angularZ controls yaw by adjusting left and right motor speeds inversely
+        motorCmd.leftMotorSpeed = clamp(velCmd.linearX - velCmd.angularZ, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
+        motorCmd.rightMotorSpeed = clamp(velCmd.linearX + velCmd.angularZ, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
+        
+        // Pump control directly from linearZ
+        motorCmd.pumpControl = clamp(velCmd.linearZ, PUMP_MIN_CONTROL, PUMP_MAX_CONTROL);
+        
+        return motorCmd;
+        }
+        
+        // Update motor and pump based on received VelocityCommand
+        void MotorControllerModule::update(const VelocityCommand &commands)
+        {
+        // Map VelocityCommand to MotorCommand
+        MotorCommand motorCmd = mapVelocityToMotorCommand(commands);
+        
+        // Define time delta (dt) for PID computation
+        float dt = 0.1f; // Assuming update is called at 10 Hz
+        
+        // Apply Motor Commands with PID control
+        applyMotorCommands(motorCmd, dt);
+        }
+        
+        // Apply MotorCommand to actuators using PID control
+        void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, float dt)
+        {
+        // Compute PID outputs
+        float pidOutputLeft = pidLeftMotor.compute(motorCmd.leftMotorSpeed, leftMotor.getCurrentSpeed(), dt);
+        float pidOutputRight = pidRightMotor.compute(motorCmd.rightMotorSpeed, rightMotor.getCurrentSpeed(), dt);
+        float pidOutputPump = pidPump.compute(motorCmd.pumpControl, pump.getCurrentPumpStatus(), dt);
+        
+        // Clamp PID outputs to actuator ranges
+        pidOutputLeft = clamp(pidOutputLeft, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
+        pidOutputRight = clamp(pidOutputRight, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
+        pidOutputPump = clamp(pidOutputPump, PUMP_MIN_CONTROL, PUMP_MAX_CONTROL);
+        
+        // Apply PID outputs to actuators
+        leftMotor.setSpeed(pidOutputLeft);
+        rightMotor.setSpeed(pidOutputRight);
+        pump.setControl(pidOutputPump);
+        
+        // Update pump status based on sensor readings
+        pump.updateStatus();
+        
+        // Update current status
+        {
+        std::lock_guard<std::mutex> lock(statusMutex);
+        currentStatus.currentLeftMotorSpeed = leftMotor.getCurrentSpeed();
+        currentStatus.currentRightMotorSpeed = rightMotor.getCurrentSpeed();
+        currentStatus.currentPumpStatus = pump.getCurrentPumpStatus();
+        currentStatus.isOperational = true; // Update based on actual conditions
+        
+        // Implement additional error checks if necessary
+        // For example:
+        // if (fabs(currentLeftMotorSpeed) > LEFT_MOTOR_MAX_SPEED * 0.9f) {
+        //     currentStatus.isOperational = false;
+        //     Serial.println("Left Motor approaching maximum speed!");
+        // }
+        }
+        
+        Serial.println("MotorCommands applied with PID control.");
+        }
+        
+        // Get current status for logging or feedback
+        Status MotorControllerModule::getStatus() const
+        {
+        std::lock_guard<std::mutex> lock(statusMutex);
+        return currentStatus;
+        }
+        ---------------------
+    main.cpp
+      ---- File Content ----
+      #include <Arduino.h>
+      #include "config.h"
+      #include "Communication/InterESPCommunication.h"
+      #include "MotorControl/MotorController.h"
+      #include "Utils/Message.h"
+      
+      // Instantiate modules
+      InterESPCommunication interESPComm;
+      MotorControllerModule motorController;
+      
+      // FreeRTOS Task Handles
+      TaskHandle_t CommunicationTaskHandle = NULL;
+      TaskHandle_t MotorControlTaskHandle = NULL;
+      TaskHandle_t LoggingTaskHandle = NULL;
+      
+      // Function to log current status
+      void logCurrentStatus(const Status &status)
+      {
+      Serial.println("=== MotorController Status ===");
+      Serial.print("Operational: ");
+      Serial.println(status.isOperational ? "Yes" : "No");
+      Serial.print("Left Motor Speed: ");
+      Serial.print(status.currentLeftMotorSpeed);
+      Serial.println(" m/s");
+      Serial.print("Right Motor Speed: ");
+      Serial.print(status.currentRightMotorSpeed);
+      Serial.println(" m/s");
+      Serial.print("Pump Status: ");
+      Serial.print(status.currentPumpStatus);
+      Serial.println(" m/s");
+      Serial.println("==============================");
+      }
+      
+      // Task function prototypes
+      void CommunicationTask(void *pvParameters);
+      void MotorControlTask(void *pvParameters);
+      void LoggingTask(void *pvParameters);
+      
+      void setup()
+      {
+      // Initialize serial communication for debugging
+      Serial.begin(115200);
+      while (!Serial)
+      {
+      ; // Wait for serial port to connect
+      }
+      Serial.println("MotorController Initializing...");
+      
+      // Initialize modules
+      interESPComm.init();
+      motorController.init();
+      
+      // Create tasks
+      xTaskCreate(
+      CommunicationTask,
+      "CommunicationTask",
+      TASK_STACK_SIZE_COMMUNICATION,
+      NULL,
+      TASK_PRIORITY_COMMUNICATION,
+      &CommunicationTaskHandle);
+      
+      xTaskCreate(
+      MotorControlTask,
+      "MotorControlTask",
+      TASK_STACK_SIZE_MOTOR_CONTROL,
+      NULL,
+      TASK_PRIORITY_MOTOR_CONTROL,
+      &MotorControlTaskHandle);
+      
+      xTaskCreate(
+      LoggingTask,
+      "LoggingTask",
+      TASK_STACK_SIZE_LOGGING,
+      NULL,
+      TASK_PRIORITY_LOGGING,
+      &LoggingTaskHandle);
+      
+      Serial.println("MotorController Initialized.");
+      }
+      
+      void loop()
+      {
+      // The loop remains empty as tasks are managed by FreeRTOS
+      vTaskDelay(portMAX_DELAY);
+      }
+      
+      // Communication Task: Handles receiving VelocityCommands and enqueuing Status updates
+      void CommunicationTask(void *pvParameters)
+      {
+      VelocityCommand receivedVelocity;
+      
+      while (1)
+      {
+      // Attempt to receive VelocityCommands
+      if (interESPComm.receiveVelocityCommands(receivedVelocity))
+      {
+      // Update MotorController with received commands
+      motorController.update(receivedVelocity);
+      Serial.println("VelocityCommand processed.");
+      }
+      
+      // Allow other tasks to run
+      vTaskDelay(pdMS_TO_TICKS(10)); // Yield for better multitasking
+      }
+      }
+      
+      // Motor Control Task: Retrieves Status from MotorController and enqueues it for sending
+      void MotorControlTask(void *pvParameters)
+      {
+      Status status;
+      
+      while (1)
+      {
+      // Retrieve current status from MotorController
+      status = motorController.getStatus();
+      
+      // Enqueue Status for sending via Communication Module
+      interESPComm.sendStatus(status);
+      Serial.println("Status enqueued for sending by MotorControlTask.");
+      
+      vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz
+      }
+      }
+      
+      // Logging Task: Logs status information for diagnostics
+      void LoggingTask(void *pvParameters)
+      {
+      Status status;
+      
+      while (1)
+      {
+      // Retrieve current status
+      status = motorController.getStatus();
+      
+      // Log status
+      logCurrentStatus(status);
+      
+      vTaskDelay(pdMS_TO_TICKS(1000)); // 1 Hz
+      }
+      }
+      ---------------------

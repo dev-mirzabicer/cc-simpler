@@ -1,0 +1,2477 @@
+.
+  include
+  lib
+  src
+    DataAggregation
+      DataAggregator.cpp
+        ---- File Content ----
+        #include "DataAggregator.h"
+        
+        #define MAX_RETRIES 3
+        #define RETRY_DELAY_MS 50 // Delay between retries in milliseconds
+        
+        DataAggregator::DataAggregator()
+        : interESPComm(nullptr)
+        {
+        // Initialize aggregatedData with zeros or default values
+        memset(&aggregatedData, 0, sizeof(SensorData));
+        }
+        
+        void DataAggregator::init(InterESPCommunication *comm)
+        {
+        interESPComm = comm;
+        }
+        
+        SensorData DataAggregator::collectData()
+        {
+        #ifdef FREERTOS_ENABLED
+        std::lock_guard<std::mutex> lock(dataMutex); // Ensure thread safety
+        #endif
+        
+        SensorData dataController1;
+        SensorData dataController2;
+        bool success1 = false;
+        bool success2 = false;
+        
+        // Attempt to receive data with retries
+        for (int attempt = 0; attempt < MAX_RETRIES; ++attempt)
+        {
+        success1 = interESPComm->receiveSensorData(SENSOR_CONTROLLER_ADDRESS_1, dataController1);
+        if (success1)
+        break;
+        delay(RETRY_DELAY_MS);
+        }
+        
+        for (int attempt = 0; attempt < MAX_RETRIES; ++attempt)
+        {
+        success2 = interESPComm->receiveSensorData(SENSOR_CONTROLLER_ADDRESS_2, dataController2);
+        if (success2)
+        break;
+        delay(RETRY_DELAY_MS);
+        }
+        
+        if (success1 && success2)
+        {
+        if (validateData(dataController1, dataController2))
+        {
+        mergeSensorData(dataController1, dataController2);
+        }
+        else
+        {
+        Serial.println("Data synchronization mismatch between controllers.");
+        // Implement fallback: Use the latest timestamp data
+        if (dataController1.timestamp > dataController2.timestamp)
+        {
+        mergeSensorData(dataController1, dataController1);
+        }
+        else
+        {
+        mergeSensorData(dataController2, dataController2);
+        }
+        }
+        }
+        else
+        {
+        Serial.println("Failed to receive sensor data from one or more controllers.");
+        // Implement fallback: Use the last known good data
+        // Assuming aggregatedData holds the last good data
+        // Alternatively, reset aggregatedData or mark it as invalid
+        }
+        
+        return aggregatedData;
+        }
+        
+        void DataAggregator::mergeSensorData(const SensorData &newData1, const SensorData &newData2)
+        {
+        // Assuming:
+        // - Controller 1 provides IMU, Magnetometer, and Sonar data
+        // - Controller 2 provides Pressure data
+        
+        // Update timestamp to the latest
+        aggregatedData.timestamp = max(newData1.timestamp, newData2.timestamp);
+        
+        // Merge IMU data from Controller 1
+        aggregatedData.imuAcceleration[0] = newData1.imuAcceleration[0];
+        aggregatedData.imuAcceleration[1] = newData1.imuAcceleration[1];
+        aggregatedData.imuAcceleration[2] = newData1.imuAcceleration[2];
+        aggregatedData.imuGyro[0] = newData1.imuGyro[0];
+        aggregatedData.imuGyro[1] = newData1.imuGyro[1];
+        aggregatedData.imuGyro[2] = newData1.imuGyro[2];
+        
+        // Merge Magnetometer data from Controller 1
+        aggregatedData.magneticField[0] = newData1.magneticField[0];
+        aggregatedData.magneticField[1] = newData1.magneticField[1];
+        aggregatedData.magneticField[2] = newData1.magneticField[2];
+        
+        // Merge Sonar data from Controller 1
+        aggregatedData.sonarDistance[0] = newData1.sonarDistance[0];
+        aggregatedData.sonarDistance[1] = newData1.sonarDistance[1];
+        
+        // Merge Pressure and Depth data from Controller 2
+        aggregatedData.pressure = newData2.pressure;
+        aggregatedData.depth = newData2.depth;
+        
+        // Additional sensor data can be merged here as needed
+        }
+        
+        bool DataAggregator::validateData(const SensorData &data1, const SensorData &data2)
+        {
+        // Validate that data from both controllers are synchronized
+        // For example, check if their timestamps are within a certain threshold
+        uint32_t timeDiff = abs((int32_t)(data1.timestamp - data2.timestamp));
+        const uint32_t MAX_TIME_DIFF = 50; // milliseconds
+        
+        return (timeDiff <= MAX_TIME_DIFF);
+        }
+        ---------------------
+      DataAggregator.h
+        ---- File Content ----
+        #ifndef DATAAGGREGATOR_H
+        #define DATAAGGREGATOR_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include "../Communication/InterESPCommunication.h"
+        #include <mutex> // Include mutex for thread safety
+        
+        // Assuming the use of FreeRTOS; include necessary headers
+        #ifdef FREERTOS_ENABLED
+        #include <mutex>
+        #endif
+        
+        class DataAggregator
+        {
+        public:
+        DataAggregator();
+        void init(InterESPCommunication *comm);
+        SensorData collectData();
+        // Additional methods as needed
+        
+        private:
+        InterESPCommunication *interESPComm;
+        SensorData aggregatedData;
+        
+        std::mutex dataMutex; // For thread safety
+        
+        // Private members for data handling
+        void mergeSensorData(const SensorData &newData1, const SensorData &newData2);
+        bool validateData(const SensorData &data1, const SensorData &data2);
+        };
+        
+        #endif // DATAAGGREGATOR_H
+        ---------------------
+    config.h
+      ---- File Content ----
+      #ifndef CONFIG_H
+      #define CONFIG_H
+      
+      // I2C Configuration
+      #define I2C_SDA_PIN 21
+      #define I2C_SCL_PIN 22
+      
+      // Communication Configuration
+      #define REMOTE_COMM_BAUD_RATE 115200
+      #define INTER_ESP_COMM_BAUD_RATE 400000 // Matches Wire.setClock in InterESPCommunication
+      
+      // I2C Addresses
+      #define MOTOR_CONTROLLER_I2C_ADDRESS 0x10
+      #define SENSOR_CONTROLLER_ADDRESS_1 0x08
+      #define SENSOR_CONTROLLER_ADDRESS_2 0x09
+      // Add additional I2C addresses as needed
+      
+      // Encryption Configuration for Remote Communication
+      #define AES_KEY_SIZE 16            // 16 bytes for AES-128
+      #define AES_KEY "1234567890abcdef" // Example key (replace with secure key)
+      
+      // FreeRTOS Task Priorities
+      #define TASK_PRIORITY_SENSOR_DATA 2
+      #define TASK_PRIORITY_STATE_ESTIMATION 2
+      #define TASK_PRIORITY_COMMUNICATION 1
+      #define TASK_PRIORITY_PATH_PLANNING 2
+      #define TASK_PRIORITY_PATH_FOLLOWING 2
+      #define TASK_PRIORITY_MOTOR_CONTROL 3
+      #define TASK_PRIORITY_LOGGING 1
+      
+      // FreeRTOS Task Stack Sizes (in words, typically 4 bytes each)
+      #define TASK_STACK_SIZE_SENSOR_DATA 4096
+      #define TASK_STACK_SIZE_STATE_ESTIMATION 4096
+      #define TASK_STACK_SIZE_COMMUNICATION 4096
+      #define TASK_STACK_SIZE_PATH_PLANNING 4096
+      #define TASK_STACK_SIZE_PATH_FOLLOWING 4096
+      #define TASK_STACK_SIZE_MOTOR_CONTROL 4096
+      #define TASK_STACK_SIZE_LOGGING 2048
+      
+      // Other global configurations
+      // e.g., sensor calibration parameters
+      
+      #endif // CONFIG_H
+      ---------------------
+    Utils
+      Message.cpp
+        ---- File Content ----
+        #include "Message.h"
+        
+        // Polynomial for CRC-CCITT
+        #define CRC16_POLY 0x1021
+        
+        // Calculate CRC16 checksum
+        uint16_t calculateCRC16(const uint8_t *data, size_t length)
+        {
+        uint16_t crc = 0xFFFF; // Initial value
+        
+        for (size_t i = 0; i < length; ++i)
+        {
+        crc ^= (uint16_t)data[i] << 8;
+        for (uint8_t j = 0; j < 8; ++j)
+        {
+        if (crc & 0x8000)
+        crc = (crc << 1) ^ CRC16_POLY;
+        else
+        crc = crc << 1;
+        }
+        }
+        return crc;
+        }
+        
+        // Additional helper functions can be implemented here if needed
+        ---------------------
+      Utilities.h
+        ---- File Content ----
+        #ifndef UTILITIES_H
+        #define UTILITIES_H
+        
+        #include <Arduino.h>
+        
+        // Clamp a value between min and max
+        inline float clamp(float value, float minVal, float maxVal)
+        {
+        if (value < minVal)
+        return minVal;
+        if (value > maxVal)
+        return maxVal;
+        return value;
+        }
+        
+        // Map a float from one range to another
+        inline float mapFloat(float x, float in_min, float in_max, float out_min, float out_max)
+        {
+        return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+        }
+        
+        #endif // UTILITIES_H
+        ---------------------
+      Message.h
+        ---- File Content ----
+        #ifndef MESSAGE_H
+        #define MESSAGE_H
+        
+        #include <Arduino.h>
+        #include <vector>
+        
+        // Define maximum payload size
+        #define MAX_PAYLOAD_SIZE 256
+        
+        // Enumeration for message types
+        enum class MessageType
+        {
+        SENSOR_DATA = 0,
+        VELOCITY_COMMAND = 1, // Updated from MOTOR_COMMAND to VELOCITY_COMMAND
+        PATH_UPDATE = 2,
+        STATUS_UPDATE = 3,
+        OCCUPANCY_GRID = 4,
+        // Add additional message types as needed
+        };
+        
+        // Struct for waypoints
+        struct Waypoint
+        {
+        float x;
+        float y;
+        float z;
+        float yaw; // Orientation at the waypoint
+        
+        // Ensure no padding
+        } __attribute__((packed));
+        
+        // Struct for path
+        struct Path
+        {
+        std::vector<Waypoint> waypoints;
+        } __attribute__((packed));
+        
+        // Struct for sensor data
+        struct SensorData
+        {
+        uint32_t timestamp;       // Timestamp in milliseconds
+        float imuAcceleration[3]; // X, Y, Z acceleration
+        float imuGyro[3];         // X, Y, Z gyroscope
+        float magneticField[3];   // X, Y, Z magnetometer
+        float pressure;           // Pressure reading
+        float depth;              // Depth calculated from pressure
+        float sonarDistance[2];   // Distances from two sonar sensors
+        // Add additional sensor data fields as needed
+        
+        } __attribute__((packed));
+        
+        // Struct for velocity commands (formerly MotorCommand)
+        struct VelocityCommand
+        {
+        float linearX;  // Forward/backward movement (m/s)
+        float linearY;  // Lateral movement (m/s) - Optional
+        float linearZ;  // Vertical movement (pump control) (m/s)
+        float angularX; // Roll control (degrees/s)
+        float angularY; // Pitch control (degrees/s)
+        float angularZ; // Yaw control (degrees/s)
+        } __attribute__((packed));
+        
+        // Struct for status updates
+        struct Status
+        {
+        bool isOperational;
+        float currentLeftMotorSpeed;  // Current speed of left motor (m/s)
+        float currentRightMotorSpeed; // Current speed of right motor (m/s)
+        float currentPumpStatus;      // Current pump status (m/s)
+        // Add additional status fields as needed
+        
+        } __attribute__((packed));
+        
+        // Struct for occupancy grid
+        struct OccupancyGrid
+        {
+        int sizeX;
+        int sizeY;
+        int sizeZ;
+        float resolution;              // Meters per grid cell
+        std::vector<uint8_t> gridData; // 0 = free, 1 = occupied
+        } __attribute__((packed));
+        
+        // Struct for messages
+        struct Message
+        {
+        uint8_t startByte;                 // Synchronization byte (e.g., 0xAA)
+        MessageType type;                  // Type of message
+        uint16_t length;                   // Length of payload
+        uint8_t payload[MAX_PAYLOAD_SIZE]; // Payload data
+        uint16_t checksum;                 // CRC16 checksum for error detection
+        } __attribute__((packed));
+        
+        // Function to calculate CRC16 checksum
+        uint16_t calculateCRC16(const uint8_t *data, size_t length);
+        
+        #endif // MESSAGE_H
+        ---------------------
+    PID
+      PIDController.cpp
+        ---- File Content ----
+        #include "PIDController.h"
+        
+        // Constructor with optional integral limit
+        PIDController::PIDController(float kp_val, float ki_val, float kd_val, float integralLim)
+        : kp(kp_val), ki(ki_val), kd(kd_val), previousError(0.0f), integral(0.0f), integralLimit(integralLim)
+        {
+        // Initialize variables
+        }
+        
+        // Initialize PID controller
+        void PIDController::init()
+        {
+        reset();
+        }
+        
+        // Compute PID output with anti-windup and variable time step
+        float PIDController::compute(float setpoint, float measuredValue, float dt)
+        {
+        std::lock_guard<std::mutex> lock(pidMutex); // Ensure thread safety
+        
+        float error = setpoint - measuredValue;
+        integral += error * dt;
+        
+        // Anti-windup: Clamp the integral term
+        if (integral > integralLimit)
+        integral = integralLimit;
+        else if (integral < -integralLimit)
+        integral = -integralLimit;
+        
+        float derivative = (error - previousError) / dt;
+        previousError = error;
+        
+        return (kp * error) + (ki * integral) + (kd * derivative);
+        }
+        
+        // Reset PID controller
+        void PIDController::reset()
+        {
+        std::lock_guard<std::mutex> lock(pidMutex); // Ensure thread safety
+        previousError = 0.0f;
+        integral = 0.0f;
+        }
+        ---------------------
+      PIDController.h
+        ---- File Content ----
+        #ifndef PIDCONTROLLER_H
+        #define PIDCONTROLLER_H
+        
+        #include <Arduino.h>
+        #include <mutex> // Include mutex for thread safety
+        
+        class PIDController
+        {
+        public:
+        PIDController(float kp, float ki, float kd, float integralLimit = 100.0f);
+        void init();
+        float compute(float setpoint, float measuredValue, float dt);
+        void reset();
+        // Additional methods as needed
+        
+        private:
+        float kp;
+        float ki;
+        float kd;
+        float previousError;
+        float integral;
+        float integralLimit; // Maximum absolute value for integral term
+        std::mutex pidMutex; // Mutex for protecting PID calculations
+        // Private members for PID calculation
+        };
+        
+        #endif // PIDCONTROLLER_H
+        ---------------------
+    Communication
+      InterESPCommunication.h
+        ---- File Content ----
+        #ifndef INTERESP_COMMUNICATION_H
+        #define INTERESP_COMMUNICATION_H
+        
+        #include <Arduino.h>
+        #include <Wire.h>
+        #include "../Utils/Message.h"
+        #include "../Utils/Utilities.h"
+        #include <mutex>
+        #include <queue>
+        
+        class InterESPCommunication
+        {
+        public:
+        InterESPCommunication();
+        void init();
+        
+        // Methods to send VelocityCommand and receive Status
+        bool sendVelocityCommand(const VelocityCommand &commands);
+        bool receiveStatus(Status &status);
+        
+        private:
+        std::mutex i2cMutex; // Mutex for protecting I2C operations
+        
+        // Helper functions
+        void serializeVelocityCommand(const VelocityCommand &commands, Message &msg);
+        bool deserializeStatus(const uint8_t *buffer, size_t length, Status &status);
+        
+        // I2C communication helper
+        bool sendMessageToSlave(const Message &msg, uint8_t slaveAddress);
+        bool requestMessageFromSlave(Message &msg, uint8_t slaveAddress);
+        };
+        
+        #endif // INTERESP_COMMUNICATION_H
+        ---------------------
+      RemoteCommunication.cpp
+        ---- File Content ----
+        #include "RemoteCommunication.h"
+        
+        // Define constants for message parsing
+        #define MESSAGE_START_BYTE 0xAA
+        #define MAX_MESSAGE_SIZE 512 // Adjust as needed based on maximum expected payload
+        
+        // Constructor
+        RemoteCommunication::RemoteCommunication()
+        : receiveState(ReceiveState::WAIT_START),
+        currentMessageType(0),
+        currentPayloadLength(0),
+        payloadIndex(0),
+        receivedChecksum(0),
+        tempChecksum(0),
+        headerBytesRead(0),
+        checksumBytesRead(0)
+        {
+        // Initialize AES key securely
+        // Example: Use a secure method to set the key, such as reading from non-volatile memory or secure storage
+        // For demonstration, we'll use a predefined key
+        const char *secureKey = AES_KEY; // Ensure AES_KEY is defined securely
+        memcpy(aes_key, secureKey, sizeof(aes_key));
+        
+        // Initialize Reed-Solomon with appropriate parameters
+        // Example: RS(255, 223) for standard RS-255/223
+        rs.init(255, 223);
+        }
+        
+        // Initialize acoustic communication
+        void RemoteCommunication::init()
+        {
+        // Initialize acoustic communication hardware (e.g., sonar sensors)
+        // Configure TX and RX pins if necessary
+        // Example: initialize serial communication for acoustic modem
+        Serial1.begin(REMOTE_COMM_BAUD_RATE, SERIAL_8N1, RX_PIN, TX_PIN);
+        }
+        
+        // Serialize State into byte buffer
+        void RemoteCommunication::serializeState(const State &state, uint8_t *buffer, size_t &length)
+        {
+        // Convert State struct into a byte array
+        memcpy(buffer, &state, sizeof(State));
+        length = sizeof(State);
+        }
+        
+        // Deserialize Path from byte buffer
+        bool RemoteCommunication::deserializePath(const uint8_t *buffer, size_t length, Path &path)
+        {
+        if (length < sizeof(Waypoint))
+        {
+        Serial.println("Received Path data length mismatch");
+        return false;
+        }
+        
+        // Assuming the buffer contains a series of waypoints
+        size_t numWaypoints = length / sizeof(Waypoint);
+        path.waypoints.clear();
+        for (size_t i = 0; i < numWaypoints; ++i)
+        {
+        Waypoint wp;
+        memcpy(&wp, buffer + (i * sizeof(Waypoint)), sizeof(Waypoint));
+        path.waypoints.push_back(wp);
+        }
+        
+        return true;
+        }
+        
+        // Deserialize OccupancyGrid from byte buffer
+        bool RemoteCommunication::deserializeOccupancyGrid(const uint8_t *buffer, size_t length, OccupancyGrid &grid)
+        {
+        if (length < sizeof(int) * 3 + sizeof(float))
+        {
+        Serial.println("Received OccupancyGrid data length mismatch");
+        return false;
+        }
+        
+        memcpy(&grid.sizeX, buffer, sizeof(int));
+        memcpy(&grid.sizeY, buffer + sizeof(int), sizeof(int));
+        memcpy(&grid.sizeZ, buffer + 2 * sizeof(int), sizeof(int));
+        memcpy(&grid.resolution, buffer + 3 * sizeof(int), sizeof(float));
+        
+        size_t dataStart = 3 * sizeof(int) + sizeof(float);
+        size_t dataLength = length - dataStart;
+        
+        // Prevent buffer overflow
+        if (dataLength > (MAX_MESSAGE_SIZE - dataStart))
+        {
+        Serial.println("OccupancyGrid data size exceeds buffer limits");
+        return false;
+        }
+        
+        grid.gridData.clear();
+        for (size_t i = 0; i < dataLength; ++i)
+        {
+        grid.gridData.push_back(buffer[dataStart + i]);
+        }
+        
+        return true;
+        }
+        
+        // Calculate CRC16 checksum
+        uint16_t RemoteCommunication::calculateCRC16Checksum(const uint8_t *data, size_t length)
+        {
+        return calculateCRC16(data, length);
+        }
+        
+        // Verify CRC16 checksum
+        bool RemoteCommunication::verifyCRC16Checksum(uint8_t *data, size_t length, uint16_t checksum)
+        {
+        uint16_t computed = calculateCRC16Checksum(data, length);
+        return (computed == checksum);
+        }
+        
+        // Send State data to Remote Computer
+        void RemoteCommunication::sendState(const State &state)
+        {
+        uint8_t buffer[MAX_MESSAGE_SIZE];
+        size_t length = 0;
+        serializeState(state, buffer, length);
+        
+        // Encrypt data
+        byte encryptedData[MAX_MESSAGE_SIZE];
+        {
+        std::lock_guard<std::mutex> lock(encryptionMutex);
+        aesLib.encrypt(encryptedData, buffer, length, aes_key);
+        }
+        
+        // Apply Reed-Solomon encoding
+        byte encodedData[MAX_MESSAGE_SIZE + 10]; // 10-byte parity (example)
+        size_t encodedLength = rs.encode(encodedData, encryptedData, length);
+        if (encodedLength == 0)
+        {
+        Serial.println("Reed-Solomon encoding failed for State");
+        return;
+        }
+        
+        // Compute CRC16 checksum
+        uint16_t checksum = calculateCRC16Checksum(encodedData, encodedLength);
+        
+        // Prepare message
+        Message msg;
+        msg.startByte = MESSAGE_START_BYTE;
+        msg.type = MessageType::STATUS_UPDATE; // Assuming sending status; adjust as needed
+        msg.length = encodedLength;
+        memset(msg.payload, 0, sizeof(msg.payload));
+        memcpy(msg.payload, encodedData, encodedLength);
+        msg.checksum = checksum;
+        
+        // Transmit data via Serial1 (acoustic modem)
+        Serial1.write((uint8_t *)&msg, sizeof(Message));
+        }
+        
+        // Process any received commands
+        void RemoteCommunication::processReceivedCommands()
+        {
+        while (Serial1.available() > 0)
+        {
+        uint8_t byte = Serial1.read();
+        
+        switch (receiveState)
+        {
+        case ReceiveState::WAIT_START:
+        if (byte == MESSAGE_START_BYTE)
+        {
+        receiveState = ReceiveState::RECEIVE_HEADER;
+        currentMessageType = 0;
+        currentPayloadLength = 0;
+        payloadIndex = 0;
+        memset(payloadBuffer, 0, sizeof(payloadBuffer));
+        receivedChecksum = 0;
+        tempChecksum = 0;
+        headerBytesRead = 0;
+        checksumBytesRead = 0;
+        }
+        break;
+        
+        case ReceiveState::RECEIVE_HEADER:
+        // Read MessageType (1 byte) and Length (2 bytes)
+        if (headerBytesRead == 0)
+        {
+        currentMessageType = byte;
+        headerBytesRead++;
+        }
+        else if (headerBytesRead == 1)
+        {
+        currentPayloadLength = byte;
+        headerBytesRead++;
+        }
+        else if (headerBytesRead == 2)
+        {
+        currentPayloadLength |= ((uint16_t)byte << 8);
+        headerBytesRead++;
+        if (currentPayloadLength > MAX_PAYLOAD_SIZE)
+        {
+        Serial.println("Payload length exceeds maximum limit. Discarding message.");
+        receiveState = ReceiveState::WAIT_START;
+        }
+        else
+        {
+        receiveState = ReceiveState::RECEIVE_PAYLOAD;
+        }
+        }
+        break;
+        
+        case ReceiveState::RECEIVE_PAYLOAD:
+        payloadBuffer[payloadIndex++] = byte;
+        if (payloadIndex >= currentPayloadLength)
+        {
+        receiveState = ReceiveState::RECEIVE_CHECKSUM;
+        }
+        break;
+        
+        case ReceiveState::RECEIVE_CHECKSUM:
+        // Read checksum (2 bytes)
+        tempChecksum |= ((uint16_t)byte << (8 * checksumBytesRead));
+        checksumBytesRead++;
+        if (checksumBytesRead >= 2)
+        {
+        // Verify checksum
+        if (verifyCRC16Checksum(payloadBuffer, currentPayloadLength, tempChecksum))
+        {
+        // Decode Reed-Solomon
+        byte decodedData[MAX_MESSAGE_SIZE];
+        size_t decodedLength = rs.decode(decodedData, payloadBuffer, currentPayloadLength);
+        if (decodedLength == 0)
+        {
+        Serial.println("Reed-Solomon decoding failed.");
+        // Reset state
+        receiveState = ReceiveState::WAIT_START;
+        checksumBytesRead = 0;
+        tempChecksum = 0;
+        break;
+        }
+        
+        // Decrypt data
+        byte decryptedData[MAX_MESSAGE_SIZE];
+        {
+        std::lock_guard<std::mutex> lock(encryptionMutex);
+        aesLib.decrypt(decryptedData, decodedData, decodedLength, aes_key);
+        }
+        
+        // Dispatch based on MessageType
+        switch (static_cast<MessageType>(currentMessageType))
+        {
+        case MessageType::PATH_UPDATE:
+        {
+        Path receivedPath;
+        if (deserializePath(decryptedData, decodedLength, receivedPath))
+        {
+        // Enqueue the received path
+        {
+        std::lock_guard<std::mutex> lock(pathQueueMutex);
+        if (pathQueueInternal.size() < 10) // Limit queue size
+        {
+        pathQueueInternal.push(receivedPath);
+        Serial.println("Path received and enqueued successfully.");
+        }
+        else
+        {
+        Serial.println("Path queue is full. Dropping received path.");
+        }
+        }
+        }
+        else
+        {
+        Serial.println("Failed to deserialize Path data.");
+        }
+        break;
+        }
+        case MessageType::OCCUPANCY_GRID:
+        {
+        OccupancyGrid receivedGrid;
+        if (deserializeOccupancyGrid(decryptedData, decodedLength, receivedGrid))
+        {
+        // Enqueue the received occupancy grid
+        {
+        std::lock_guard<std::mutex> lock(gridQueueMutex);
+        if (gridQueueInternal.size() < 10) // Limit queue size
+        {
+        gridQueueInternal.push(receivedGrid);
+        Serial.println("OccupancyGrid received and enqueued successfully.");
+        }
+        else
+        {
+        Serial.println("OccupancyGrid queue is full. Dropping received grid.");
+        }
+        }
+        }
+        else
+        {
+        Serial.println("Failed to deserialize OccupancyGrid data.");
+        }
+        break;
+        }
+        default:
+        Serial.println("Received unsupported message type.");
+        break;
+        }
+        }
+        else
+        {
+        Serial.println("Checksum mismatch. Discarding message.");
+        }
+        
+        // Reset state
+        receiveState = ReceiveState::WAIT_START;
+        checksumBytesRead = 0;
+        tempChecksum = 0;
+        }
+        break;
+        
+        default:
+        // Unknown state, reset
+        receiveState = ReceiveState::WAIT_START;
+        break;
+        }
+        }
+        }
+        
+        // Receive Path from Remote Computer
+        bool RemoteCommunication::receivePath(Path &path)
+        {
+        std::lock_guard<std::mutex> lock(pathQueueMutex);
+        if (!pathQueueInternal.empty())
+        {
+        path = pathQueueInternal.front();
+        pathQueueInternal.pop();
+        return true;
+        }
+        return false;
+        }
+        
+        // Receive OccupancyGrid from Remote Computer
+        bool RemoteCommunication::receiveOccupancyGrid(OccupancyGrid &grid)
+        {
+        std::lock_guard<std::mutex> lock(gridQueueMutex);
+        if (!gridQueueInternal.empty())
+        {
+        grid = gridQueueInternal.front();
+        gridQueueInternal.pop();
+        return true;
+        }
+        return false;
+        }
+        ---------------------
+      InterESPCommunication.cpp
+        ---- File Content ----
+        #include "InterESPCommunication.h"
+        
+        // Constants for retry mechanism
+        #define I2C_MAX_RETRIES 3
+        #define I2C_RETRY_DELAY_MS 50 // Delay between retries in milliseconds
+        
+        // Constructor
+        InterESPCommunication::InterESPCommunication()
+        {
+        // Initialize variables if necessary
+        }
+        
+        // Initialize I2C communication
+        void InterESPCommunication::init()
+        {
+        Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);    // Join I2C bus as master
+        Wire.setClock(INTER_ESP_COMM_BAUD_RATE); // Set I2C clock to defined rate
+        Serial.println("InterESPCommunication initialized as I2C Master.");
+        }
+        
+        // Serialize VelocityCommand into Message
+        void InterESPCommunication::serializeVelocityCommand(const VelocityCommand &commands, Message &msg)
+        {
+        msg.startByte = 0xAA; // Example start byte
+        msg.type = MessageType::VELOCITY_COMMAND;
+        msg.length = sizeof(VelocityCommand);
+        memset(msg.payload, 0, sizeof(msg.payload));
+        memcpy(msg.payload, &commands, sizeof(VelocityCommand));
+        msg.checksum = calculateCRC16(msg.payload, msg.length);
+        }
+        
+        // Send VelocityCommand to Motor Controller with retry logic
+        bool InterESPCommunication::sendVelocityCommand(const VelocityCommand &commands)
+        {
+        Message msg;
+        serializeVelocityCommand(commands, msg);
+        
+        bool transmissionSuccess = false;
+        {
+        std::lock_guard<std::mutex> lock(i2cMutex); // Protect I2C operations
+        for (int attempt = 0; attempt < I2C_MAX_RETRIES; ++attempt)
+        {
+        Wire.beginTransmission(MOTOR_CONTROLLER_I2C_ADDRESS);
+        Wire.write((uint8_t *)&msg, sizeof(Message));
+        uint8_t error = Wire.endTransmission();
+        
+        if (error == 0)
+        {
+        transmissionSuccess = true;
+        Serial.println("VelocityCommand transmitted successfully.");
+        break; // Successful transmission
+        }
+        else
+        {
+        Serial.print("I2C Transmission Error to Motor Controller: ");
+        Serial.println(error);
+        delay(I2C_RETRY_DELAY_MS); // Wait before retrying
+        }
+        }
+        }
+        
+        if (!transmissionSuccess)
+        {
+        Serial.println("Failed to transmit Velocity Command after multiple attempts.");
+        // Implement additional error handling if necessary
+        return false;
+        }
+        
+        return true;
+        }
+        
+        // Deserialize Status from received Message
+        bool InterESPCommunication::deserializeStatus(const uint8_t *buffer, size_t length, Status &status)
+        {
+        if (length < sizeof(Message))
+        {
+        Serial.println("Received data length mismatch for Status.");
+        return false;
+        }
+        
+        Message msg;
+        memcpy(&msg, buffer, sizeof(Message));
+        
+        // Verify checksum using CRC16
+        uint16_t computedChecksum = calculateCRC16(msg.payload, msg.length);
+        if (computedChecksum != msg.checksum)
+        {
+        Serial.println("Status checksum verification failed.");
+        return false;
+        }
+        
+        if (msg.type != MessageType::STATUS_UPDATE)
+        {
+        Serial.println("Incorrect message type received for Status.");
+        return false;
+        }
+        
+        // Deserialize Status
+        if (msg.length > sizeof(Status))
+        {
+        Serial.println("Status payload size mismatch.");
+        return false;
+        }
+        memcpy(&status, msg.payload, sizeof(Status));
+        
+        return true;
+        }
+        
+        // Receive Status from Motor Controller
+        bool InterESPCommunication::receiveStatus(Status &status)
+        {
+        std::lock_guard<std::mutex> lock(i2cMutex);
+        Message msg;
+        Wire.requestFrom(MOTOR_CONTROLLER_I2C_ADDRESS, sizeof(Message));
+        uint8_t buffer[sizeof(Message)] = {0};
+        size_t len = Wire.readBytes(buffer, sizeof(Message));
+        
+        if (len != sizeof(Message))
+        {
+        Serial.println("Incomplete Status message received.");
+        return false;
+        }
+        
+        // Deserialize Status
+        if (deserializeStatus(buffer, len, status))
+        {
+        Serial.println("Status received successfully.");
+        return true;
+        }
+        else
+        {
+        Serial.println("Failed to deserialize Status message.");
+        return false;
+        }
+        }
+        ---------------------
+      RemoteCommunication.h
+        ---- File Content ----
+        #ifndef REMOTECOMMUNICATION_H
+        #define REMOTECOMMUNICATION_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include <AESLib.h>
+        #include <ReedSolomon.h>
+        #include <mutex>
+        #include <queue>
+        
+        class RemoteCommunication
+        {
+        public:
+        RemoteCommunication();
+        void init();
+        void sendState(const State &state);
+        void processReceivedCommands();
+        bool receivePath(Path &path);
+        bool receiveOccupancyGrid(OccupancyGrid &grid);
+        // Additional methods as needed
+        
+        private:
+        // Encryption
+        AESLib aesLib;
+        byte aes_key[16]; // 16-byte AES key
+        
+        // Reed-Solomon
+        ReedSolomon rs;
+        
+        // Acoustic communication pins (example)
+        const uint8_t TX_PIN = 17; // Transmit pin
+        const uint8_t RX_PIN = 16; // Receive pin
+        
+        // Mutexes for thread safety
+        std::mutex encryptionMutex;
+        std::mutex pathQueueMutex;
+        std::mutex gridQueueMutex;
+        
+        // Internal queues to store received paths and occupancy grids
+        std::queue<Path> pathQueueInternal;
+        std::queue<OccupancyGrid> gridQueueInternal;
+        
+        // Helper functions
+        void serializeState(const State &state, uint8_t *buffer, size_t &length);
+        bool deserializePath(const uint8_t *buffer, size_t length, Path &path);
+        bool deserializeOccupancyGrid(const uint8_t *buffer, size_t length, OccupancyGrid &grid);
+        uint16_t calculateCRC16Checksum(const uint8_t *data, size_t length);
+        bool verifyCRC16Checksum(uint8_t *data, size_t length, uint16_t checksum);
+        
+        // Message parsing state
+        enum class ReceiveState
+        {
+        WAIT_START,
+        RECEIVE_HEADER,
+        RECEIVE_PAYLOAD,
+        RECEIVE_CHECKSUM
+        } receiveState;
+        
+        uint8_t currentMessageType;
+        uint16_t currentPayloadLength;
+        uint8_t payloadBuffer[MAX_PAYLOAD_SIZE];
+        uint16_t receivedChecksum;
+        size_t payloadIndex;
+        
+        // Helper variables
+        uint16_t tempChecksum;
+        int headerBytesRead;
+        int checksumBytesRead;
+        };
+        
+        #endif // REMOTECOMMUNICATION_H
+        ---------------------
+    PathFollowing
+      PathFollower.cpp
+        ---- File Content ----
+        #include "PathFollower.h"
+        
+        // Constructor
+        PathFollower::PathFollower()
+        : interESPComm(nullptr), localPathAdjuster(nullptr),
+        kp_linear(1.0f), ki_linear(0.0f), kd_linear(0.1f),
+        kp_angular(1.0f), ki_angular(0.0f), kd_angular(0.1f),
+        currentWaypointIndex(0),
+        pidLinearX(kp_linear, ki_linear, kd_linear, 100.0f),
+        pidLinearY(kp_linear, ki_linear, kd_linear, 100.0f),
+        pidLinearZ(kp_linear, ki_linear, kd_linear, 50.0f),
+        pidAngularX(kp_angular, ki_angular, kd_angular, 50.0f),
+        pidAngularY(kp_angular, ki_angular, kd_angular, 50.0f),
+        pidAngularZ(kp_angular, ki_angular, kd_angular, 50.0f),
+        prevLinearX(0.0f),
+        prevLinearY(0.0f),
+        prevLinearZ(0.0f),
+        prevAngularX(0.0f),
+        prevAngularY(0.0f),
+        prevAngularZ(0.0f),
+        maxLinearAccel(5.0f),  // m/s²
+        maxAngularAccel(45.0f) // degrees/s²
+        {
+        // Initialize PID controllers with default parameters
+        }
+        
+        void PathFollower::init(InterESPCommunication *comm, LocalPathAdjuster *adjuster)
+        {
+        interESPComm = comm;
+        localPathAdjuster = adjuster;
+        
+        // Initialize PID controllers
+        pidLinearX.init();
+        pidLinearY.init();
+        pidLinearZ.init();
+        pidAngularX.init();
+        pidAngularY.init();
+        pidAngularZ.init();
+        }
+        
+        VelocityCommand PathFollower::followPath(const State &currentState, const Path &globalPath, const OccupancyGrid &occupancyGrid)
+        {
+        std::lock_guard<std::mutex> lock(motorMutex); // Ensure thread safety
+        
+        VelocityCommand cmd = {0, 0, 0, 0, 0, 0};
+        
+        if (globalPath.waypoints.empty())
+        {
+        // No waypoints to follow
+        return cmd;
+        }
+        
+        // Determine the target waypoint (closest ahead within a threshold)
+        Waypoint target;
+        float minDist = INFINITY;
+        size_t targetIndex = currentWaypointIndex;
+        
+        for (size_t i = currentWaypointIndex; i < globalPath.waypoints.size(); ++i)
+        {
+        float dist = sqrt(pow(globalPath.waypoints[i].x - currentState.x, 2) +
+        pow(globalPath.waypoints[i].y - currentState.y, 2) +
+        pow(globalPath.waypoints[i].z - currentState.z, 2));
+        if (dist < minDist)
+        {
+        minDist = dist;
+        target = globalPath.waypoints[i];
+        targetIndex = i;
+        }
+        
+        if (dist < 1.0f) // Threshold to move to next waypoint
+        {
+        currentWaypointIndex = i + 1;
+        }
+        }
+        
+        // If all waypoints are reached
+        if (currentWaypointIndex >= globalPath.waypoints.size())
+        {
+        // Set all commands to zero
+        return cmd;
+        }
+        
+        // Calculate errors
+        float errorX = target.x - currentState.x;
+        float errorY = target.y - currentState.y;
+        float errorZ = target.z - currentState.z;
+        float errorYaw = target.yaw - currentState.yaw;
+        
+        // Normalize yaw error to [-180, 180]
+        if (errorYaw > 180.0f)
+        errorYaw -= 360.0f;
+        if (errorYaw < -180.0f)
+        errorYaw += 360.0f;
+        
+        // Compute time step (dt)
+        float dt = 0.1f; // Assuming 10 Hz loop rate; adjust as necessary
+        
+        // PID control for linear velocities
+        float controlX = pidLinearX.compute(errorX, currentState.x, dt);
+        float controlY = pidLinearY.compute(errorY, currentState.y, dt);
+        float controlZ = pidLinearZ.compute(errorZ, currentState.z, dt);
+        
+        // PID control for angular velocities using angular rates
+        float controlRoll = pidAngularX.compute(0.0f, currentState.roll, dt);   // Assuming target roll is 0
+        float controlPitch = pidAngularY.compute(0.0f, currentState.pitch, dt); // Assuming target pitch is 0
+        float controlYaw = pidAngularZ.compute(errorYaw, currentState.yaw, dt);
+        
+        // Assign controls to command
+        cmd.linearX = controlX;
+        cmd.linearY = controlY;
+        cmd.linearZ = controlZ;
+        cmd.angularX = controlRoll;
+        cmd.angularY = controlPitch;
+        cmd.angularZ = controlYaw;
+        
+        // Adjust commands based on local path adjustments
+        if (localPathAdjuster)
+        {
+        VelocityCommand adjustedCmd = localPathAdjuster->adjustPath(currentState, globalPath, occupancyGrid);
+        cmd.linearX += adjustedCmd.linearX;
+        cmd.linearY += adjustedCmd.linearY;
+        cmd.linearZ += adjustedCmd.linearZ;
+        cmd.angularX += adjustedCmd.angularX;
+        cmd.angularY += adjustedCmd.angularY;
+        cmd.angularZ += adjustedCmd.angularZ;
+        }
+        
+        // Clamp commands to maximum limits
+        cmd.linearX = clamp(cmd.linearX, -10.0f, 10.0f);   // Example limits (m/s)
+        cmd.linearY = clamp(cmd.linearY, -10.0f, 10.0f);   // Example limits (m/s)
+        cmd.linearZ = clamp(cmd.linearZ, -5.0f, 5.0f);     // Pump control limits (m/s)
+        cmd.angularX = clamp(cmd.angularX, -45.0f, 45.0f); // Degrees/s
+        cmd.angularY = clamp(cmd.angularY, -45.0f, 45.0f); // Degrees/s
+        cmd.angularZ = clamp(cmd.angularZ, -90.0f, 90.0f); // Degrees/s
+        
+        // Apply acceleration limits
+        cmd.linearX = clamp(cmd.linearX, prevLinearX - maxLinearAccel * dt, prevLinearX + maxLinearAccel * dt);
+        cmd.linearY = clamp(cmd.linearY, prevLinearY - maxLinearAccel * dt, prevLinearY + maxLinearAccel * dt);
+        cmd.linearZ = clamp(cmd.linearZ, prevLinearZ - maxLinearAccel * dt, prevLinearZ + maxLinearAccel * dt);
+        cmd.angularX = clamp(cmd.angularX, prevAngularX - maxAngularAccel * dt, prevAngularX + maxAngularAccel * dt);
+        cmd.angularY = clamp(cmd.angularY, prevAngularY - maxAngularAccel * dt, prevAngularY + maxAngularAccel * dt);
+        cmd.angularZ = clamp(cmd.angularZ, prevAngularZ - maxAngularAccel * dt, prevAngularZ + maxAngularAccel * dt);
+        
+        // Update previous commands
+        prevLinearX = cmd.linearX;
+        prevLinearY = cmd.linearY;
+        prevLinearZ = cmd.linearZ;
+        prevAngularX = cmd.angularX;
+        prevAngularY = cmd.angularY;
+        prevAngularZ = cmd.angularZ;
+        
+        // Store the last velocity command
+        {
+        std::lock_guard<std::mutex> lock(velocityCmdMutex);
+        lastVelocityCmdStored = cmd;
+        }
+        
+        return cmd;
+        }
+        
+        float PathFollower::clamp(float value, float minVal, float maxVal)
+        {
+        if (value < minVal)
+        return minVal;
+        if (value > maxVal)
+        return maxVal;
+        return value;
+        }
+        
+        float PathFollower::mapFloat(float x, float in_min, float in_max, float out_min, float out_max)
+        {
+        return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+        }
+        
+        VelocityCommand PathFollower::getLastVelocityCommand() const
+        {
+        std::lock_guard<std::mutex> lock(velocityCmdMutex); // Ensure thread safety
+        return lastVelocityCmdStored;
+        }
+        ---------------------
+      PathFollower.h
+        ---- File Content ----
+        #ifndef PATHFOLLOWER_H
+        #define PATHFOLLOWER_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include "../PID/PIDController.h"
+        #include "../Communication/InterESPCommunication.h"
+        #include "../PathPlanning/LocalPathAdjuster.h"
+        #include <mutex>
+        
+        // Structure to hold velocity commands
+        struct VelocityCommand
+        {
+        float linearX;  // Forward/backward movement (m/s)
+        float linearY;  // Lateral movement (m/s) - Optional
+        float linearZ;  // Vertical movement (pump control) (m/s)
+        float angularX; // Roll control (degrees/s)
+        float angularY; // Pitch control (degrees/s)
+        float angularZ; // Yaw control (degrees/s)
+        };
+        
+        class PathFollower
+        {
+        public:
+        PathFollower();
+        void init(InterESPCommunication *comm, LocalPathAdjuster *adjuster);
+        VelocityCommand followPath(const State &currentState, const Path &globalPath, const OccupancyGrid &occupancyGrid);
+        VelocityCommand getLastVelocityCommand() const;
+        
+        private:
+        InterESPCommunication *interESPComm;
+        LocalPathAdjuster *localPathAdjuster;
+        PIDController pidLinearX;
+        PIDController pidLinearY;
+        PIDController pidLinearZ;
+        PIDController pidAngularX;
+        PIDController pidAngularY;
+        PIDController pidAngularZ;
+        
+        // Define PID parameters (to be tuned)
+        float kp_linear;
+        float ki_linear;
+        float kd_linear;
+        
+        float kp_angular;
+        float ki_angular;
+        float kd_angular;
+        
+        // Waypoint tracking
+        size_t currentWaypointIndex;
+        
+        // Previous velocity commands for acceleration limiting
+        float prevLinearX;
+        float prevLinearY;
+        float prevLinearZ;
+        float prevAngularX;
+        float prevAngularY;
+        float prevAngularZ;
+        
+        // Acceleration limits (units per command cycle)
+        float maxLinearAccel;
+        float maxAngularAccel;
+        
+        // Last known velocity command
+        mutable std::mutex velocityCmdMutex;
+        VelocityCommand lastVelocityCmdStored;
+        
+        // Helper functions
+        void computeVelocityCommands(const VelocityCommand &cmd);
+        float clamp(float value, float minVal, float maxVal);
+        float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
+        
+        // Mutex for protecting velocity commands
+        std::mutex motorMutex;
+        };
+        
+        #endif // PATHFOLLOWER_H
+        ---------------------
+    main.cpp
+      ---- File Content ----
+      #include <Arduino.h>
+      #include "config.h"
+      #include "Communication/InterESPCommunication.h"
+      #include "Communication/RemoteCommunication.h"
+      #include "DataAggregation/DataAggregator.h"
+      #include "StateEstimation/StateEstimator.h"
+      #include "PathPlanning/LocalPathAdjuster.h"
+      #include "PathFollowing/PathFollower.h"
+      #include "Utils/Message.h"
+      
+      // Instantiate modules
+      InterESPCommunication interESPComm;
+      RemoteCommunication remoteComm;
+      DataAggregator dataAggregator;
+      StateEstimator stateEstimator;
+      LocalPathAdjuster localPathAdjuster;
+      PathFollower pathFollower;
+      
+      // FreeRTOS Task Handles
+      TaskHandle_t SensorTaskHandle = NULL;
+      TaskHandle_t StateEstimationTaskHandle = NULL;
+      TaskHandle_t CommunicationTaskHandle = NULL;
+      TaskHandle_t PathFollowingTaskHandle = NULL;
+      TaskHandle_t MotorControlTaskHandle = NULL;
+      TaskHandle_t LoggingTaskHandle = NULL;
+      
+      // FreeRTOS Queues
+      QueueHandle_t sensorDataQueue;
+      QueueHandle_t stateQueue;
+      QueueHandle_t velocityCmdQueue;
+      QueueHandle_t pathQueue;
+      QueueHandle_t occupancyGridQueue;
+      QueueHandle_t statusQueue; // New Queue for Status updates
+      
+      // Function to log current state
+      void logCurrentState(const State &state)
+      {
+      Serial.println("=== Current State ===");
+      Serial.print("Position -> X: ");
+      Serial.print(state.x);
+      Serial.print(", Y: ");
+      Serial.print(state.y);
+      Serial.print(", Z: ");
+      Serial.println(state.z);
+      
+      Serial.print("Orientation -> Roll: ");
+      Serial.print(state.roll);
+      Serial.print(", Pitch: ");
+      Serial.print(state.pitch);
+      Serial.print(", Yaw: ");
+      Serial.println(state.yaw);
+      
+      Serial.print("Velocity -> Vx: ");
+      Serial.print(state.vx);
+      Serial.print(", Vy: ");
+      Serial.print(state.vy);
+      Serial.print(", Vz: ");
+      Serial.println(state.vz);
+      
+      Serial.print("Angular Velocity -> Vx: ");
+      Serial.print(state.angularVx);
+      Serial.print(", Vy: ");
+      Serial.print(state.angularVy);
+      Serial.print(", Vz: ");
+      Serial.println(state.angularVz);
+      Serial.println("=======================");
+      }
+      
+      // Function to log Status updates
+      void logStatus(const Status &status)
+      {
+      Serial.println("=== MotorController Status ===");
+      Serial.print("Operational: ");
+      Serial.println(status.isOperational ? "Yes" : "No");
+      Serial.print("Left Motor Speed: ");
+      Serial.print(status.currentLeftMotorSpeed);
+      Serial.println(" m/s");
+      Serial.print("Right Motor Speed: ");
+      Serial.print(status.currentRightMotorSpeed);
+      Serial.println(" m/s");
+      Serial.print("Pump Status: ");
+      Serial.print(status.currentPumpStatus);
+      Serial.println(" m/s");
+      Serial.println("==============================");
+      }
+      
+      // Task function prototypes
+      void SensorTask(void *pvParameters);
+      void StateEstimationTask(void *pvParameters);
+      void CommunicationTask(void *pvParameters);
+      void PathFollowingTask(void *pvParameters);
+      void MotorControlTask(void *pvParameters);
+      void LoggingTask(void *pvParameters);
+      
+      void setup()
+      {
+      // Initialize serial communication for debugging
+      Serial.begin(115200);
+      while (!Serial)
+      {
+      ; // Wait for serial port to connect. Needed for native USB
+      }
+      Serial.println("Main Controller Initializing...");
+      
+      // Initialize all modules
+      interESPComm.init();
+      remoteComm.init();
+      dataAggregator.init(&interESPComm);
+      stateEstimator.init();
+      localPathAdjuster.init();
+      pathFollower.init(&interESPComm, &localPathAdjuster);
+      
+      // Initialize FreeRTOS Queues
+      sensorDataQueue = xQueueCreate(10, sizeof(SensorData));
+      stateQueue = xQueueCreate(10, sizeof(State));
+      velocityCmdQueue = xQueueCreate(10, sizeof(VelocityCommand));
+      pathQueue = xQueueCreate(10, sizeof(Path));
+      occupancyGridQueue = xQueueCreate(10, sizeof(OccupancyGrid));
+      statusQueue = xQueueCreate(10, sizeof(Status)); // Initialize Status Queue
+      
+      if (sensorDataQueue == NULL || stateQueue == NULL || velocityCmdQueue == NULL || pathQueue == NULL || occupancyGridQueue == NULL || statusQueue == NULL)
+      {
+      Serial.println("Failed to create FreeRTOS queues.");
+      while (1)
+      ; // Halt execution
+      }
+      
+      // Create tasks
+      xTaskCreate(
+      SensorTask,
+      "SensorTask",
+      TASK_STACK_SIZE_SENSOR_DATA,
+      NULL,
+      TASK_PRIORITY_SENSOR_DATA,
+      &SensorTaskHandle);
+      
+      xTaskCreate(
+      StateEstimationTask,
+      "StateEstimationTask",
+      TASK_STACK_SIZE_STATE_ESTIMATION,
+      NULL,
+      TASK_PRIORITY_STATE_ESTIMATION,
+      &StateEstimationTaskHandle);
+      
+      xTaskCreate(
+      CommunicationTask,
+      "CommunicationTask",
+      TASK_STACK_SIZE_COMMUNICATION,
+      NULL,
+      TASK_PRIORITY_COMMUNICATION,
+      &CommunicationTaskHandle);
+      
+      xTaskCreate(
+      PathFollowingTask,
+      "PathFollowingTask",
+      TASK_STACK_SIZE_PATH_PLANNING, // Reusing stack size for path following
+      NULL,
+      TASK_PRIORITY_PATH_PLANNING,
+      &PathFollowingTaskHandle);
+      
+      xTaskCreate(
+      MotorControlTask,
+      "MotorControlTask",
+      TASK_STACK_SIZE_MOTOR_CONTROL,
+      NULL,
+      TASK_PRIORITY_MOTOR_CONTROL,
+      &MotorControlTaskHandle);
+      
+      xTaskCreate(
+      LoggingTask,
+      "LoggingTask",
+      TASK_STACK_SIZE_LOGGING,
+      NULL,
+      TASK_PRIORITY_LOGGING,
+      &LoggingTaskHandle);
+      
+      Serial.println("Main Controller Initialized.");
+      }
+      
+      void loop()
+      {
+      // The loop remains empty as tasks are managed by FreeRTOS
+      vTaskDelay(portMAX_DELAY);
+      }
+      
+      // Sensor Data Collection Task
+      void SensorTask(void *pvParameters)
+      {
+      while (1)
+      {
+      // Collect data from Sensor Controllers
+      SensorData aggregatedData = dataAggregator.collectData();
+      
+      // Send data to State Estimation Task via sensorDataQueue
+      if (xQueueSend(sensorDataQueue, &aggregatedData, portMAX_DELAY) != pdPASS)
+      {
+      Serial.println("Failed to send sensor data to State Estimation Task.");
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz
+      }
+      }
+      
+      // State Estimation Task
+      void StateEstimationTask(void *pvParameters)
+      {
+      SensorData receivedData;
+      VelocityCommand currentVelocityCmd;
+      
+      while (1)
+      {
+      // Receive sensor data from Sensor Task
+      if (xQueueReceive(sensorDataQueue, &receivedData, portMAX_DELAY) == pdPASS)
+      {
+      // Receive the latest velocity command from Motor Control Task
+      if (xQueuePeek(velocityCmdQueue, &currentVelocityCmd, 0) != pdPASS)
+      {
+      // If no new velocity command, use last known
+      // Implemented via PathFollower's getLastVelocityCommand
+      currentVelocityCmd = pathFollower.getLastVelocityCommand();
+      }
+      
+      // Estimate current state with sensor data and control inputs
+      stateEstimator.estimateState(receivedData, currentVelocityCmd);
+      State currentState = stateEstimator.getCurrentState();
+      
+      // Send current state to Logging Task via stateQueue
+      if (xQueueSend(stateQueue, &currentState, portMAX_DELAY) != pdPASS)
+      {
+      Serial.println("Failed to send state data to Logging Task.");
+      }
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(10)); // Minimal delay to yield CPU
+      }
+      }
+      
+      // Communication Task
+      void CommunicationTask(void *pvParameters)
+      {
+      while (1)
+      {
+      // Process any received commands from Remote Computer
+      remoteComm.processReceivedCommands();
+      
+      // Check if a new path is available and send it to Path Planning Task
+      Path receivedPath;
+      if (remoteComm.receivePath(receivedPath))
+      {
+      if (xQueueSend(pathQueue, &receivedPath, portMAX_DELAY) != pdPASS)
+      {
+      Serial.println("Failed to send path to Path Following Task.");
+      }
+      }
+      
+      // Check if a new occupancy grid is available and send it to Path Planning Task
+      OccupancyGrid receivedGrid;
+      if (remoteComm.receiveOccupancyGrid(receivedGrid))
+      {
+      if (xQueueSend(occupancyGridQueue, &receivedGrid, portMAX_DELAY) != pdPASS)
+      {
+      Serial.println("Failed to send Occupancy Grid to Path Following Task.");
+      }
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(100)); // Adjust as needed
+      }
+      }
+      
+      // Path Following Task
+      void PathFollowingTask(void *pvParameters)
+      {
+      Path receivedPath;
+      OccupancyGrid receivedGrid;
+      State currentState;
+      Path currentPath;
+      OccupancyGrid currentOccupancyGrid;
+      
+      while (1)
+      {
+      // Check for new path
+      if (xQueueReceive(pathQueue, &receivedPath, pdMS_TO_TICKS(10)) == pdPASS)
+      {
+      currentPath = receivedPath;
+      Serial.println("Path received and updated for following.");
+      }
+      
+      // Check for new occupancy grid
+      if (xQueueReceive(occupancyGridQueue, &receivedGrid, pdMS_TO_TICKS(10)) == pdPASS)
+      {
+      currentOccupancyGrid = receivedGrid;
+      Serial.println("Occupancy Grid received and updated for path following.");
+      }
+      
+      // Get current state from State Estimation Task via stateQueue
+      if (xQueueReceive(stateQueue, &currentState, pdMS_TO_TICKS(10)) == pdPASS)
+      {
+      // Follow the path using PathFollower
+      VelocityCommand cmd = pathFollower.followPath(currentState, currentPath, currentOccupancyGrid);
+      
+      // Send velocity command to Motor Control Task via velocityCmdQueue
+      if (xQueueSend(velocityCmdQueue, &cmd, portMAX_DELAY) != pdPASS)
+      {
+      Serial.println("Failed to send velocity command to Motor Control Task.");
+      }
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(10)); // Adjust as needed
+      }
+      }
+      
+      // Motor Control Task
+      void MotorControlTask(void *pvParameters)
+      {
+      VelocityCommand receivedCmd;
+      Status receivedStatus;
+      
+      while (1)
+      {
+      // Receive velocity commands from Path Following Task
+      if (xQueueReceive(velocityCmdQueue, &receivedCmd, portMAX_DELAY) == pdPASS)
+      {
+      // Send VelocityCommand to Motor Controller via I2C
+      if (interESPComm.sendVelocityCommand(receivedCmd))
+      {
+      // Optionally, log successful transmission
+      Serial.println("VelocityCommand sent to Motor Controller.");
+      }
+      else
+      {
+      Serial.println("Failed to send VelocityCommand to Motor Controller.");
+      }
+      }
+      
+      // Periodically request Status from Motor Controller
+      static unsigned long lastStatusRequest = 0;
+      unsigned long currentMillis = millis();
+      if (currentMillis - lastStatusRequest >= 1000) // Every 1 second
+      {
+      if (interESPComm.receiveStatus(receivedStatus))
+      {
+      // Send Status to Logging Task via statusQueue
+      if (xQueueSend(statusQueue, &receivedStatus, portMAX_DELAY) != pdPASS)
+      {
+      Serial.println("Failed to send Status to Logging Task.");
+      }
+      }
+      else
+      {
+      Serial.println("Failed to receive Status from Motor Controller.");
+      }
+      lastStatusRequest = currentMillis;
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(10)); // Minimal delay to yield CPU
+      }
+      }
+      
+      // Logging Task
+      void LoggingTask(void *pvParameters)
+      {
+      State currentState;
+      Status currentStatus;
+      
+      while (1)
+      {
+      // Receive state data from State Estimation Task
+      if (xQueueReceive(stateQueue, &currentState, pdMS_TO_TICKS(10)) == pdPASS)
+      {
+      // Log current state for debugging
+      logCurrentState(currentState);
+      }
+      
+      // Receive Status from Motor Control Task
+      if (xQueueReceive(statusQueue, &currentStatus, 0) == pdPASS)
+      {
+      // Log Status updates
+      logStatus(currentStatus);
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(1000)); // 1 Hz
+      }
+      }
+      ---------------------
+    PathPlanning
+      GlobalPathPlanner.h
+        ---- File Content ----
+        #ifndef GLOBALPATHPLANNER_H
+        #define GLOBALPATHPLANNER_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include <vector>
+        #include <queue>
+        #include <functional>
+        #include <mutex> // Include mutex for thread safety
+        
+        // Structure representing a node in the grid
+        struct GridNode
+        {
+        int x, y, z;
+        float cost;
+        float heuristic;
+        float totalCost;
+        GridNode *parent;
+        
+        GridNode(int _x, int _y, int _z) : x(_x), y(_y), z(_z), cost(0), heuristic(0), totalCost(0), parent(nullptr) {}
+        };
+        
+        // Comparator for the priority queue (min-heap based on totalCost)
+        struct CompareGridNode
+        {
+        bool operator()(const GridNode *a, const GridNode *b) const
+        {
+        return a->totalCost > b->totalCost;
+        }
+        };
+        
+        class GlobalPathPlanner
+        {
+        public:
+        GlobalPathPlanner();
+        void init();
+        void setGlobalPath(const Path &path);
+        Path getGlobalPath() const;
+        void updateOccupancyGrid(const OccupancyGrid &grid);
+        bool computePath(const Waypoint &start, const Waypoint &goal, Path &computedPath);
+        // Additional methods as needed
+        
+        private:
+        Path globalPath;
+        OccupancyGrid currentOccupancyGrid;
+        mutable std::mutex plannerMutex; // Mutex for thread safety
+        
+        // A* related functions
+        bool isOccupied(int x, int y, int z) const;
+        std::vector<Waypoint> findPath(const Waypoint &start, const Waypoint &goal);
+        float calculateHeuristic(int x, int y, int z, const Waypoint &goal) const;
+        bool isValid(int x, int y, int z) const;
+        };
+        
+        #endif // GLOBALPATHPLANNER_H
+        ---------------------
+      GlobalPathPlanner.cpp
+        ---- File Content ----
+        #include "GlobalPathPlanner.h"
+        #include <algorithm>
+        #include <cmath>
+        
+        // Constructor
+        GlobalPathPlanner::GlobalPathPlanner()
+        {
+        // Initialize occupancy grid with free space
+        // Initially empty; will be updated from remote computer
+        }
+        
+        // Initialize Global Path Planner
+        void GlobalPathPlanner::init()
+        {
+        // Any additional initialization
+        }
+        
+        // Set global path received from Remote Computer
+        void GlobalPathPlanner::setGlobalPath(const Path &path)
+        {
+        std::lock_guard<std::mutex> lock(plannerMutex);
+        globalPath = path;
+        }
+        
+        // Get current global path
+        Path GlobalPathPlanner::getGlobalPath() const
+        {
+        std::lock_guard<std::mutex> lock(plannerMutex);
+        return globalPath;
+        }
+        
+        // Update occupancy grid based on received data
+        void GlobalPathPlanner::updateOccupancyGrid(const OccupancyGrid &grid)
+        {
+        std::lock_guard<std::mutex> lock(plannerMutex);
+        currentOccupancyGrid = grid;
+        }
+        
+        // Check if a grid cell is occupied
+        bool GlobalPathPlanner::isOccupied(int x, int y, int z) const
+        {
+        std::lock_guard<std::mutex> lock(plannerMutex);
+        if (x < 0 || x >= currentOccupancyGrid.sizeX ||
+        y < 0 || y >= currentOccupancyGrid.sizeY ||
+        z < 0 || z >= currentOccupancyGrid.sizeZ)
+        {
+        return true; // Out of bounds treated as occupied
+        }
+        size_t index = z * currentOccupancyGrid.sizeY * currentOccupancyGrid.sizeX + y * currentOccupancyGrid.sizeX + x;
+        if (index >= currentOccupancyGrid.gridData.size())
+        {
+        return true; // Invalid index treated as occupied
+        }
+        return (currentOccupancyGrid.gridData[index] == 1);
+        }
+        
+        // Calculate heuristic (Euclidean distance)
+        float GlobalPathPlanner::calculateHeuristic(int x, int y, int z, const Waypoint &goal) const
+        {
+        float dx = (x * currentOccupancyGrid.resolution) - goal.x;
+        float dy = (y * currentOccupancyGrid.resolution) - goal.y;
+        float dz = (z * currentOccupancyGrid.resolution) - goal.z;
+        return sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        
+        // Check if the cell is within the grid and not occupied
+        bool GlobalPathPlanner::isValid(int x, int y, int z) const
+        {
+        return (x >= 0 && x < currentOccupancyGrid.sizeX &&
+        y >= 0 && y < currentOccupancyGrid.sizeY &&
+        z >= 0 && z < currentOccupancyGrid.sizeZ &&
+        !isOccupied(x, y, z));
+        }
+        
+        // Find path using A* algorithm with priority queue
+        std::vector<Waypoint> GlobalPathPlanner::findPath(const Waypoint &start, const Waypoint &goal)
+        {
+        std::vector<Waypoint> path;
+        
+        // Convert start and goal positions to grid coordinates
+        int startX = round(start.x / currentOccupancyGrid.resolution);
+        int startY = round(start.y / currentOccupancyGrid.resolution);
+        int startZ = round(start.z / currentOccupancyGrid.resolution);
+        
+        int goalX = round(goal.x / currentOccupancyGrid.resolution);
+        int goalY = round(goal.y / currentOccupancyGrid.resolution);
+        int goalZ = round(goal.z / currentOccupancyGrid.resolution);
+        
+        // Initialize open and closed lists
+        std::priority_queue<GridNode *, std::vector<GridNode *>, CompareGridNode> openList;
+        std::vector<std::vector<std::vector<bool>>> closedList(
+        currentOccupancyGrid.sizeX,
+        std::vector<std::vector<bool>>(
+        currentOccupancyGrid.sizeY,
+        std::vector<bool>(currentOccupancyGrid.sizeZ, false)));
+        
+        GridNode *startNode = new GridNode(startX, startY, startZ);
+        startNode->cost = 0.0f;
+        startNode->heuristic = calculateHeuristic(startX, startY, startZ, goal);
+        startNode->totalCost = startNode->heuristic;
+        
+        openList.push(startNode);
+        
+        while (!openList.empty())
+        {
+        GridNode *current = openList.top();
+        openList.pop();
+        
+        // If already closed, skip
+        if (closedList[current->x][current->y][current->z])
+        {
+        delete current;
+        continue;
+        }
+        
+        // Mark as closed
+        closedList[current->x][current->y][current->z] = true;
+        
+        // Check if goal is reached
+        if (current->x == goalX && current->y == goalY && current->z == goalZ)
+        {
+        // Reconstruct path
+        GridNode *node = current;
+        while (node != nullptr)
+        {
+        Waypoint wp;
+        wp.x = node->x * currentOccupancyGrid.resolution;
+        wp.y = node->y * currentOccupancyGrid.resolution;
+        wp.z = node->z * currentOccupancyGrid.resolution;
+        wp.yaw = 0.0f; // Placeholder; can be set based on path orientation
+        path.push_back(wp);
+        node = node->parent;
+        }
+        // Reverse path to start from beginning
+        std::reverse(path.begin(), path.end());
+        
+        // Clean up remaining nodes in open list
+        while (!openList.empty())
+        {
+        GridNode *remaining = openList.top();
+        openList.pop();
+        delete remaining;
+        }
+        
+        // Clean up current node
+        delete current;
+        break;
+        }
+        
+        // Generate neighbors (6-connected grid)
+        const int directions[6][3] = {
+        {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+        
+        for (int i = 0; i < 6; ++i)
+        {
+        int neighborX = current->x + directions[i][0];
+        int neighborY = current->y + directions[i][1];
+        int neighborZ = current->z + directions[i][2];
+        
+        if (!isValid(neighborX, neighborY, neighborZ))
+        continue;
+        
+        if (closedList[neighborX][neighborY][neighborZ])
+        continue;
+        
+        // Calculate cost
+        float newCost = current->cost + currentOccupancyGrid.resolution;
+        
+        // Create neighbor node
+        GridNode *neighbor = new GridNode(neighborX, neighborY, neighborZ);
+        neighbor->cost = newCost;
+        neighbor->heuristic = calculateHeuristic(neighborX, neighborY, neighborZ, goal);
+        neighbor->totalCost = neighbor->cost + neighbor->heuristic;
+        neighbor->parent = current;
+        
+        openList.push(neighbor);
+        }
+        
+        // Delete current node to free memory
+        delete current;
+        }
+        
+        return path;
+        }
+        
+        // Compute path using A* and update global path
+        bool GlobalPathPlanner::computePath(const Waypoint &start, const Waypoint &goal, Path &computedPath)
+        {
+        std::lock_guard<std::mutex> lock(plannerMutex);
+        computedPath.waypoints = findPath(start, goal);
+        return !computedPath.waypoints.empty();
+        }
+        ---------------------
+      LocalPathAdjuster.h
+        ---- File Content ----
+        #ifndef LOCALPATHADJUSTER_H
+        #define LOCALPATHADJUSTER_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include "../StateEstimation/StateEstimator.h"
+        #include "../PathPlanning/GlobalPathPlanner.h"
+        #include <vector>
+        #include <cmath>
+        #include <mutex> // Include mutex for thread safety
+        
+        // Structure to hold velocity commands
+        struct VelocityCommand
+        {
+        float linearX;  // Forward/backward movement (m/s)
+        float linearY;  // Lateral movement (m/s) - Optional
+        float linearZ;  // Vertical movement (pump control) (m/s)
+        float angularX; // Roll control (degrees/s)
+        float angularY; // Pitch control (degrees/s)
+        float angularZ; // Yaw control (degrees/s)
+        };
+        
+        // Define maximum PWM values for commands if necessary
+        
+        class LocalPathAdjuster
+        {
+        public:
+        LocalPathAdjuster();
+        void init();
+        VelocityCommand adjustPath(const State &currentState, const Path &globalPath, const OccupancyGrid &occupancyGrid);
+        // Additional methods as needed
+        
+        private:
+        // DWA parameters
+        float maxLinearSpeed;
+        float minLinearSpeed;
+        float maxLinearAccel;
+        float maxLinearDecel;
+        float maxAngularSpeed;
+        float minAngularSpeed;
+        float maxAngularAccel;
+        float maxAngularDecel;
+        float timeStep;
+        float goalThreshold;
+        float obstacleThreshold;
+        float headingWeight;
+        float clearanceWeight;
+        float smoothnessWeight;
+        float energyWeight;
+        
+        // Previous velocity commands for smoothness calculation
+        VelocityCommand prevCmd;
+        
+        // DWA related functions
+        bool isCollision(const State &simulatedState, const OccupancyGrid &occupancyGrid) const;
+        float calculateCost(const State &simulatedState, const Path &globalPath) const;
+        State simulateState(const State &currentState, const VelocityCommand &cmd, float dt) const;
+        float distanceToClosestWaypoint(const State &simulatedState, const Path &globalPath) const;
+        float calculateSmoothness(const State &simulatedState) const;
+        
+        // Mutex for thread safety
+        std::mutex adjusterMutex;
+        
+        // Helper functions
+        float clamp(float value, float minVal, float maxVal) const;
+        float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) const;
+        };
+        
+        #endif // LOCALPATHADJUSTER_H
+        ---------------------
+      LocalPathAdjuster.cpp
+        ---- File Content ----
+        #include "LocalPathAdjuster.h"
+        
+        // Constructor
+        LocalPathAdjuster::LocalPathAdjuster()
+        : maxLinearSpeed(5.0f), minLinearSpeed(-5.0f),
+        maxLinearAccel(2.0f), maxLinearDecel(2.0f),
+        maxAngularSpeed(90.0f), minAngularSpeed(-90.0f),
+        maxAngularAccel(45.0f), maxAngularDecel(45.0f),
+        timeStep(0.1f), goalThreshold(1.0f), obstacleThreshold(1.0f),
+        headingWeight(0.5f), clearanceWeight(0.3f), smoothnessWeight(0.1f),
+        energyWeight(0.1f), prevCmd{0, 0, 0, 0, 0, 0}
+        {
+        // Initialize parameters
+        }
+        
+        void LocalPathAdjuster::init()
+        {
+        // Any additional initialization
+        }
+        
+        VelocityCommand LocalPathAdjuster::adjustPath(const State &currentState, const Path &globalPath, const OccupancyGrid &occupancyGrid)
+        {
+        std::lock_guard<std::mutex> lock(adjusterMutex); // Ensure thread safety
+        
+        VelocityCommand bestCmd = {0, 0, 0, 0, 0, 0};
+        float bestCost = INFINITY;
+        
+        // Define the range of possible velocities with dynamic window
+        // Calculate dynamic window based on current velocity and acceleration constraints
+        
+        // Example for linearX
+        float currentLinearX = currentState.vx; // Current forward velocity
+        float linearXMin = clamp(currentLinearX - maxLinearDecel * timeStep, minLinearSpeed, maxLinearSpeed);
+        float linearXMax = clamp(currentLinearX + maxLinearAccel * timeStep, minLinearSpeed, maxLinearSpeed);
+        
+        // Similarly for angularZ
+        float currentAngularZ = currentState.angularVz; // Current yaw rate
+        float angularZMin = clamp(currentAngularZ - maxAngularDecel * timeStep, minAngularSpeed, maxAngularSpeed);
+        float angularZMax = clamp(currentAngularZ + maxAngularAccel * timeStep, minAngularSpeed, maxAngularSpeed);
+        
+        // Iterate over possible velocity commands within dynamic window
+        for (float linearX = linearXMin; linearX <= linearXMax; linearX += 0.5f)
+        {
+        for (float angularZ = angularZMin; angularZ <= angularZMax; angularZ += 10.0f)
+        {
+        // Create a velocity command
+        VelocityCommand cmd = {linearX, 0, 0, 0, 0, angularZ};
+        
+        // Simulate the state after applying the velocity command
+        State simulatedState = simulateState(currentState, cmd, timeStep);
+        
+        // Check for collision
+        if (isCollision(simulatedState, occupancyGrid))
+        {
+        continue; // Skip commands that result in collision
+        }
+        
+        // Calculate cost
+        float cost = calculateCost(simulatedState, globalPath);
+        
+        // Choose the command with the lowest cost
+        if (cost < bestCost)
+        {
+        bestCost = cost;
+        bestCmd = cmd;
+        }
+        }
+        }
+        
+        // Update previous command for smoothness calculation
+        prevCmd = bestCmd;
+        
+        return bestCmd;
+        }
+        
+        State LocalPathAdjuster::simulateState(const State &currentState, const VelocityCommand &cmd, float dt) const
+        {
+        State simulated = currentState;
+        
+        // Update position based on velocity and acceleration
+        simulated.x += cmd.linearX * dt;
+        simulated.y += cmd.linearY * dt; // If lateral movement is applicable
+        simulated.z += cmd.linearZ * dt; // Pump control
+        
+        // Update orientation based on angular velocities
+        simulated.roll += cmd.angularX * dt;
+        simulated.pitch += cmd.angularY * dt;
+        simulated.yaw += cmd.angularZ * dt;
+        
+        // Normalize yaw to [0, 360)
+        if (simulated.yaw >= 360.0f)
+        simulated.yaw -= 360.0f;
+        if (simulated.yaw < 0.0f)
+        simulated.yaw += 360.0f;
+        
+        // Update velocity
+        simulated.vx = cmd.linearX;
+        simulated.vy = cmd.linearY;
+        simulated.vz = cmd.linearZ;
+        simulated.angularVx = cmd.angularX;
+        simulated.angularVy = cmd.angularY;
+        simulated.angularVz = cmd.angularZ;
+        simulated.velocity = sqrt(simulated.vx * simulated.vx + simulated.vy * simulated.vy + simulated.vz * simulated.vz);
+        
+        return simulated;
+        }
+        
+        bool LocalPathAdjuster::isCollision(const State &simulatedState, const OccupancyGrid &occupancyGrid) const
+        {
+        // Convert simulated position to grid coordinates
+        int gridX = round(simulatedState.x / occupancyGrid.resolution);
+        int gridY = round(simulatedState.y / occupancyGrid.resolution);
+        int gridZ = round(simulatedState.z / occupancyGrid.resolution);
+        
+        // Check bounds
+        if (gridX < 0 || gridX >= occupancyGrid.sizeX ||
+        gridY < 0 || gridY >= occupancyGrid.sizeY ||
+        gridZ < 0 || gridZ >= occupancyGrid.sizeZ)
+        {
+        return true; // Out of bounds treated as collision
+        }
+        
+        // Check occupancy
+        size_t index = gridZ * occupancyGrid.sizeY * occupancyGrid.sizeX + gridY * occupancyGrid.sizeX + gridX;
+        if (index >= occupancyGrid.gridData.size())
+        {
+        return true; // Invalid index treated as collision
+        }
+        
+        return (occupancyGrid.gridData[index] == 1);
+        }
+        
+        float LocalPathAdjuster::calculateCost(const State &simulatedState, const Path &globalPath) const
+        {
+        if (globalPath.waypoints.empty())
+        {
+        return INFINITY;
+        }
+        
+        // Calculate distance to the closest waypoint
+        float minDist = INFINITY;
+        Waypoint closestWaypoint;
+        for (auto &wp : globalPath.waypoints)
+        {
+        float dist = sqrt(pow(wp.x - simulatedState.x, 2) +
+        pow(wp.y - simulatedState.y, 2) +
+        pow(wp.z - simulatedState.z, 2));
+        if (dist < minDist)
+        {
+        minDist = dist;
+        closestWaypoint = wp;
+        }
+        }
+        
+        // Calculate heading alignment
+        float desiredYaw = closestWaypoint.yaw;
+        float yawError = abs(simulatedState.yaw - desiredYaw);
+        if (yawError > 180.0f)
+        yawError = 360.0f - yawError;
+        
+        float headingCost = yawError / 180.0f; // Normalize to [0,1]
+        
+        // Calculate clearance based on distance to obstacles
+        // Use the inverse of minDist
+        float clearanceCost = 1.0f / (minDist + 1e-5f); // Avoid division by zero
+        
+        // Calculate smoothness (change in velocity)
+        float smoothnessCost = calculateSmoothness(simulatedState);
+        
+        // Calculate energy consumption (penalize excessive speeds)
+        float energyCost = simulatedState.velocity / maxLinearSpeed; // Normalize to [0,1]
+        
+        // Combine costs with weights
+        float totalCost = headingWeight * headingCost +
+        clearanceWeight * clearanceCost +
+        smoothnessWeight * smoothnessCost +
+        energyWeight * energyCost;
+        
+        return totalCost;
+        }
+        
+        float LocalPathAdjuster::calculateSmoothness(const State &simulatedState) const
+        {
+        // Calculate the difference between current and previous velocity commands
+        float deltaLinearX = abs(simulatedState.vx - prevCmd.linearX);
+        float deltaAngularZ = abs(simulatedState.angularVz - prevCmd.angularZ);
+        
+        // Normalize differences based on maximum possible changes
+        float normalizedDeltaLinearX = deltaLinearX / (maxLinearAccel * timeStep);
+        float normalizedDeltaAngularZ = deltaAngularZ / (maxAngularAccel * timeStep);
+        
+        // Combine normalized differences
+        float smoothnessCost = normalizedDeltaLinearX + normalizedDeltaAngularZ;
+        
+        return smoothnessCost;
+        }
+        
+        float LocalPathAdjuster::clamp(float value, float minVal, float maxVal) const
+        {
+        if (value < minVal)
+        return minVal;
+        if (value > maxVal)
+        return maxVal;
+        return value;
+        }
+        
+        float LocalPathAdjuster::mapFloat(float x, float in_min, float in_max, float out_min, float out_max) const
+        {
+        return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+        }
+        ---------------------
+    StateEstimation
+      StateEstimator.cpp
+        ---- File Content ----
+        #include "StateEstimator.h"
+        #include <cstring> // For memset
+        
+        // Define time step (dt)
+        #define TIME_STEP 0.1f // 10 Hz
+        
+        // Constructor
+        StateEstimator::StateEstimator()
+        : ekf(STATE_SIZE, MEASUREMENT_SIZE, CONTROL_SIZE, stateVec, covarianceMatrix, processNoiseMatrix, measurementNoiseMatrix, kalmanGainMatrix, tmpVec)
+        {
+        // Initialize state and covariance matrices
+        memset(stateVec, 0, sizeof(stateVec));
+        memset(covarianceMatrix, 0, sizeof(covarianceMatrix));
+        for (size_t i = 0; i < STATE_SIZE; ++i)
+        {
+        covarianceMatrix[i * STATE_SIZE + i] = 1.0f; // Initialize covariance as identity matrix
+        }
+        
+        // Initialize process and measurement noise matrices
+        memset(processNoiseMatrix, 0, sizeof(processNoiseMatrix));
+        memset(measurementNoiseMatrix, 0, sizeof(measurementNoiseMatrix));
+        
+        // Example noise values (to be tuned)
+        for (size_t i = 0; i < STATE_SIZE * STATE_SIZE; ++i)
+        {
+        processNoiseMatrix[i] = 0.01f; // Low process noise
+        }
+        for (size_t i = 0; i < MEASUREMENT_SIZE * MEASUREMENT_SIZE; ++i)
+        {
+        measurementNoiseMatrix[i] = 0.1f; // Measurement noise
+        }
+        }
+        
+        // Initialize EKF
+        void StateEstimator::init()
+        {
+        ekf.init();
+        
+        // Set initial state if known
+        stateVec[0] = 0.0f;  // x
+        stateVec[1] = 0.0f;  // y
+        stateVec[2] = 0.0f;  // z
+        stateVec[3] = 0.0f;  // vx
+        stateVec[4] = 0.0f;  // vy
+        stateVec[5] = 0.0f;  // vz
+        stateVec[6] = 0.0f;  // roll
+        stateVec[7] = 0.0f;  // pitch
+        stateVec[8] = 0.0f;  // yaw
+        stateVec[9] = 0.0f;  // ax
+        stateVec[10] = 0.0f; // ay
+        stateVec[11] = 0.0f; // az
+        stateVec[12] = 0.0f; // angularVx
+        stateVec[13] = 0.0f; // angularVy
+        stateVec[14] = 0.0f; // angularVz
+        }
+        
+        // Populate measurement vector from SensorData
+        void StateEstimator::populateMeasurement(const SensorData &data)
+        {
+        // Measurement vector consists of:
+        // [z, roll, pitch, yaw, ax, ay, az]
+        
+        measurementVec[0] = data.depth;              // z position from pressure
+        measurementVec[1] = data.imuGyro[0];         // roll from gyro
+        measurementVec[2] = data.imuGyro[1];         // pitch from gyro
+        measurementVec[3] = data.imuGyro[2];         // yaw from gyro
+        measurementVec[4] = data.imuAcceleration[0]; // ax
+        measurementVec[5] = data.imuAcceleration[1]; // ay
+        measurementVec[6] = data.imuAcceleration[2]; // az
+        }
+        
+        // Populate control vector from VelocityCommand
+        void StateEstimator::populateControl(const VelocityCommand &controlCmd, float *control)
+        {
+        // Control vector consists of:
+        // [linearX, linearY, linearZ, angularX, angularY, angularZ]
+        control[0] = controlCmd.linearX;
+        control[1] = controlCmd.linearY;
+        control[2] = controlCmd.linearZ;
+        control[3] = controlCmd.angularX;
+        control[4] = controlCmd.angularY;
+        control[5] = controlCmd.angularZ;
+        }
+        
+        // Process model: state transition function
+        void StateEstimator::processModel(float *x, const float *u, float dt)
+        {
+        // State vector:
+        // [x, y, z, vx, vy, vz, roll, pitch, yaw, ax, ay, az, angularVx, angularVy, angularVz]
+        
+        // Update position based on velocity and acceleration
+        x[0] += x[3] * dt + 0.5f * x[9] * dt * dt;  // x position
+        x[1] += x[4] * dt + 0.5f * x[10] * dt * dt; // y position
+        x[2] += x[5] * dt + 0.5f * x[11] * dt * dt; // z position (depth)
+        
+        // Update velocities based on acceleration
+        x[3] += x[9] * dt;  // vx
+        x[4] += x[10] * dt; // vy
+        x[5] += x[11] * dt; // vz
+        
+        // Update orientation based on angular velocities
+        x[6] += x[12] * dt; // roll (degrees)
+        x[7] += x[13] * dt; // pitch (degrees)
+        x[8] += x[14] * dt; // yaw (degrees)
+        
+        // Normalize yaw to [0, 360)
+        if (x[8] >= 360.0f)
+        x[8] -= 360.0f;
+        if (x[8] < 0.0f)
+        x[8] += 360.0f;
+        
+        // Update angular velocities based on angular acceleration (if modeled)
+        // Assuming angular accelerations are controlled via commands
+        // If not, set angular velocities based on control inputs
+        x[12] = u[3]; // angularVx
+        x[13] = u[4]; // angularVy
+        x[14] = u[5]; // angularVz
+        }
+        
+        // Measurement model: measurement function
+        void StateEstimator::measurementModel(const float *x, float *z)
+        {
+        // Measurement vector:
+        // [z, roll, pitch, yaw, ax, ay, az]
+        
+        z[0] = x[2];  // z position
+        z[1] = x[6];  // roll
+        z[2] = x[7];  // pitch
+        z[3] = x[8];  // yaw
+        z[4] = x[9];  // ax
+        z[5] = x[10]; // ay
+        z[6] = x[11]; // az
+        }
+        
+        // Estimate state using EKF
+        void StateEstimator::estimateState(const SensorData &data, const VelocityCommand &controlCmd)
+        {
+        // Populate measurement vector
+        populateMeasurement(data);
+        
+        // Populate control vector
+        float control[CONTROL_SIZE];
+        populateControl(controlCmd, control);
+        
+        // Predict step with control inputs
+        ekf.predict(control, TIME_STEP, processModel);
+        
+        // Update step with measurements
+        ekf.update(measurementVec, measurementModel);
+        
+        // Update currentState from state vector
+        {
+        std::lock_guard<std::mutex> lock(stateMutex); // Protect state variables
+        currentState.x = stateVec[0];
+        currentState.y = stateVec[1];
+        currentState.z = stateVec[2];
+        currentState.vx = stateVec[3];
+        currentState.vy = stateVec[4];
+        currentState.vz = stateVec[5];
+        currentState.roll = stateVec[6];
+        currentState.pitch = stateVec[7];
+        currentState.yaw = stateVec[8];
+        currentState.ax = stateVec[9];
+        currentState.ay = stateVec[10];
+        currentState.az = stateVec[11];
+        currentState.angularVx = stateVec[12];
+        currentState.angularVy = stateVec[13];
+        currentState.angularVz = stateVec[14];
+        currentState.velocity = sqrt(stateVec[3] * stateVec[3] + stateVec[4] * stateVec[4] + stateVec[5] * stateVec[5]);
+        }
+        }
+        
+        // Get current state
+        State StateEstimator::getCurrentState() const
+        {
+        std::lock_guard<std::mutex> lock(stateMutex); // Ensure thread safety
+        return currentState;
+        }
+        ---------------------
+      StateEstimator.h
+        ---- File Content ----
+        #ifndef STATEESTIMATOR_H
+        #define STATEESTIMATOR_H
+        
+        #include <Arduino.h>
+        #include "../Utils/Message.h"
+        #include <TinyEKF.h>
+        #include <mutex> // Include mutex for thread safety
+        
+        // Define state, measurement, and control dimensions
+        const size_t STATE_SIZE = 15;      // [x, y, z, vx, vy, vz, roll, pitch, yaw, ax, ay, az, angularVx, angularVy, angularVz]
+        const size_t MEASUREMENT_SIZE = 7; // [z, roll, pitch, yaw, ax, ay, az]
+        const size_t CONTROL_SIZE = 6;     // [linearX, linearY, linearZ, angularX, angularY, angularZ]
+        
+        // Structure for state estimation
+        struct State
+        {
+        float x;         // X position (meters)
+        float y;         // Y position (meters)
+        float z;         // Z position (depth in meters)
+        float vx;        // Velocity in X (m/s)
+        float vy;        // Velocity in Y (m/s)
+        float vz;        // Velocity in Z (m/s)
+        float roll;      // Roll angle (degrees)
+        float pitch;     // Pitch angle (degrees)
+        float yaw;       // Yaw angle (degrees)
+        float ax;        // Acceleration in X (m/s²)
+        float ay;        // Acceleration in Y (m/s²)
+        float az;        // Acceleration in Z (m/s²)
+        float angularVx; // Roll rate (degrees/s)
+        float angularVy; // Pitch rate (degrees/s)
+        float angularVz; // Yaw rate (degrees/s)
+        float velocity;  // Current speed (m/s)
+        } __attribute__((packed));
+        
+        class StateEstimator
+        {
+        public:
+        StateEstimator();
+        void init();
+        void estimateState(const SensorData &data, const VelocityCommand &controlCmd);
+        State getCurrentState() const;
+        // Additional methods as needed
+        
+        private:
+        State currentState;
+        // EKF variables
+        TinyEKF ekf;
+        
+        float stateVec[STATE_SIZE];
+        float covarianceMatrix[STATE_SIZE * STATE_SIZE];
+        float measurementVec[MEASUREMENT_SIZE];
+        float processNoiseMatrix[STATE_SIZE * STATE_SIZE];
+        float measurementNoiseMatrix[MEASUREMENT_SIZE * MEASUREMENT_SIZE];
+        float kalmanGainMatrix[STATE_SIZE * MEASUREMENT_SIZE];
+        float tmpVec[STATE_SIZE];
+        
+        // Mutex for protecting state variables
+        mutable std::mutex stateMutex;
+        
+        // Process model: state transition function
+        void processModel(float *x, const float *u, float dt);
+        
+        // Measurement model: measurement function
+        void measurementModel(const float *x, float *z);
+        
+        void populateMeasurement(const SensorData &data);
+        void populateControl(const VelocityCommand &controlCmd, float *control);
+        };
+        
+        #endif // STATEESTIMATOR_H
+        ---------------------
