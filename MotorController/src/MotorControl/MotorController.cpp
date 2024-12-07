@@ -3,19 +3,27 @@
 
 // Constructor
 MotorControllerModule::MotorControllerModule()
-    : leftMotor(LEFT_MOTOR_PWM_PIN, LEFT_MOTOR_DIR_PIN, ENCODER_LEFT_PIN_A, ENCODER_LEFT_PIN_B),
-      rightMotor(RIGHT_MOTOR_PWM_PIN, RIGHT_MOTOR_DIR_PIN, ENCODER_RIGHT_PIN_A, ENCODER_RIGHT_PIN_B),
-      pump(PUMP_PWM_PIN, PUMP_SENSOR_PIN),
+    : leftMotor(LEFT_MOTOR_PWM_PIN, ENCODER_LEFT_PIN_A, ENCODER_LEFT_PIN_B, 0),
+      rightMotor(RIGHT_MOTOR_PWM_PIN, ENCODER_RIGHT_PIN_A, ENCODER_RIGHT_PIN_B, 1),
+      pumpIntake(PUMP_INTAKE_PWM_PIN, PUMP_INTAKE_SENSOR_PIN, 2),
+      pumpOutflow(PUMP_OUTFLOW_PWM_PIN, PUMP_OUTFLOW_SENSOR_PIN, 3),
       pidLeftMotor(LEFT_MOTOR_KP, LEFT_MOTOR_KI, LEFT_MOTOR_KD, 100.0f),
       pidRightMotor(RIGHT_MOTOR_KP, RIGHT_MOTOR_KI, RIGHT_MOTOR_KD, 100.0f),
-      pidPump(PUMP_KP, PUMP_KI, PUMP_KD, 50.0f),
-      currentStatus{false, 0.0f, 0.0f, 0.0f}
+      pidPumpIntake(PUMP_INTAKE_KP, PUMP_INTAKE_KI, PUMP_INTAKE_KD, 50.0f),
+      pidPumpOutflow(PUMP_OUTFLOW_KP, PUMP_OUTFLOW_KI, PUMP_OUTFLOW_KD, 50.0f),
+      currentStatus{false, 0.0f, 0.0f, 0.0f, 0.0f}
 {
-    // Initialize mutex
+    // Initialize mutexes
     statusMutex = xSemaphoreCreateMutex();
     if (statusMutex == NULL)
     {
         Serial.println("MotorControllerModule: Failed to create statusMutex.");
+    }
+
+    commandMutex = xSemaphoreCreateMutex();
+    if (commandMutex == NULL)
+    {
+        Serial.println("MotorControllerModule: Failed to create commandMutex.");
     }
 }
 
@@ -25,23 +33,87 @@ void MotorControllerModule::init()
     // Initialize actuators
     leftMotor.init();
     rightMotor.init();
-    pump.init();
+    pumpIntake.init();
+    pumpOutflow.init();
 
     // Initialize PID controllers
     pidLeftMotor.init();
     pidRightMotor.init();
-    pidPump.init();
+    pidPumpIntake.init();
+    pidPumpOutflow.init();
 
     // Initialize status as operational
     {
         if (xSemaphoreTake(statusMutex, portMAX_DELAY) == pdTRUE)
         {
             currentStatus.isOperational = true;
+            currentStatus.currentLeftMotorSpeed = 0.0f;
+            currentStatus.currentRightMotorSpeed = 0.0f;
+            currentStatus.currentPumpIntakeStatus = 0.0f;
+            currentStatus.currentPumpOutflowStatus = 0.0f;
             xSemaphoreGive(statusMutex);
         }
     }
 
+    // Initialize latestCommands
+    {
+        if (xSemaphoreTake(commandMutex, portMAX_DELAY) == pdTRUE)
+        {
+            latestCommands = VelocityCommand{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            xSemaphoreGive(commandMutex);
+        }
+    }
+
     Serial.println("MotorControllerModule initialized.");
+}
+
+// Update VelocityCommand from CommunicationTask
+void MotorControllerModule::updateVelocityCommand(const VelocityCommand &commands)
+{
+    if (xSemaphoreTake(commandMutex, portMAX_DELAY) == pdTRUE)
+    {
+        latestCommands = commands;
+        xSemaphoreGive(commandMutex);
+    }
+
+    Serial.println("VelocityCommand updated.");
+}
+
+// Perform control step: map commands, compute PID, apply commands
+void MotorControllerModule::performControlStep()
+{
+    // Measure dt
+    static unsigned long lastTime = 0;
+    unsigned long currentTime = millis();
+
+    float dt;
+    if (lastTime == 0)
+    {
+        dt = 0.1f; // Initialize with default
+    }
+    else
+    {
+        dt = (currentTime - lastTime) / 1000.0f; // in seconds
+        if (dt <= 0.0f)
+        {
+            dt = 0.1f; // default to 0.1s if invalid
+        }
+    }
+    lastTime = currentTime;
+
+    // Retrieve latest commands
+    VelocityCommand currentCommands;
+    if (xSemaphoreTake(commandMutex, portMAX_DELAY) == pdTRUE)
+    {
+        currentCommands = latestCommands;
+        xSemaphoreGive(commandMutex);
+    }
+
+    // Map VelocityCommand to MotorCommand
+    MotorCommand motorCmd = mapVelocityToMotorCommand(currentCommands);
+
+    // Apply MotorCommands with PID control
+    applyMotorCommands(motorCmd, dt);
 }
 
 // Map VelocityCommand to MotorCommand
@@ -49,12 +121,24 @@ MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityComm
 {
     MotorCommand motorCmd;
     // Differential drive mapping
-    // Assuming angularZ controls yaw by adjusting left and right motor speeds inversely
-    motorCmd.leftMotorSpeed = clamp(velCmd.linearX - velCmd.angularZ, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
-    motorCmd.rightMotorSpeed = clamp(velCmd.linearX + velCmd.angularZ, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
+    float v_left = velCmd.linearX - (velCmd.angularZ * TRACK_WIDTH / 2.0f);
+    float v_right = velCmd.linearX + (velCmd.angularZ * TRACK_WIDTH / 2.0f);
 
-    // Pump control directly from linearZ
-    motorCmd.pumpControl = clamp(velCmd.linearZ, PUMP_MIN_CONTROL, PUMP_MAX_CONTROL);
+    motorCmd.leftMotorSpeed = clamp(v_left, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
+    motorCmd.rightMotorSpeed = clamp(v_right, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
+
+    // Pump control from linearZ
+    // Separate intake and outflow
+    if (velCmd.linearZ > 0.0f)
+    {
+        motorCmd.pumpIntakeControl = clamp(velCmd.linearZ, 0.0f, PUMP_INTAKE_MAX_CONTROL);
+        motorCmd.pumpOutflowControl = 0.0f;
+    }
+    else
+    {
+        motorCmd.pumpOutflowControl = clamp(-velCmd.linearZ, 0.0f, PUMP_OUTFLOW_MAX_CONTROL);
+        motorCmd.pumpIntakeControl = 0.0f;
+    }
 
     return motorCmd;
 }
@@ -65,20 +149,24 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
     // Compute PID outputs
     float pidOutputLeft = pidLeftMotor.compute(motorCmd.leftMotorSpeed, leftMotor.getCurrentSpeed(), dt);
     float pidOutputRight = pidRightMotor.compute(motorCmd.rightMotorSpeed, rightMotor.getCurrentSpeed(), dt);
-    float pidOutputPump = pidPump.compute(motorCmd.pumpControl, pump.getCurrentPumpStatus(), dt);
+    float pidOutputPumpIntake = pidPumpIntake.compute(motorCmd.pumpIntakeControl, pumpIntake.getCurrentPumpStatus(), dt);
+    float pidOutputPumpOutflow = pidPumpOutflow.compute(motorCmd.pumpOutflowControl, pumpOutflow.getCurrentPumpStatus(), dt);
 
     // Clamp PID outputs to actuator ranges
     pidOutputLeft = clamp(pidOutputLeft, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
     pidOutputRight = clamp(pidOutputRight, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
-    pidOutputPump = clamp(pidOutputPump, PUMP_MIN_CONTROL, PUMP_MAX_CONTROL);
+    pidOutputPumpIntake = clamp(pidOutputPumpIntake, 0.0f, PUMP_INTAKE_MAX_CONTROL);
+    pidOutputPumpOutflow = clamp(pidOutputPumpOutflow, 0.0f, PUMP_OUTFLOW_MAX_CONTROL);
 
     // Apply PID outputs to actuators
     leftMotor.setSpeed(pidOutputLeft);
     rightMotor.setSpeed(pidOutputRight);
-    pump.setControl(pidOutputPump);
+    pumpIntake.setControl(pidOutputPumpIntake);
+    pumpOutflow.setControl(pidOutputPumpOutflow);
 
     // Update pump status based on sensor readings
-    pump.updateStatus();
+    pumpIntake.updateStatus();
+    pumpOutflow.updateStatus();
 
     // Update current status
     {
@@ -86,7 +174,8 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
         {
             currentStatus.currentLeftMotorSpeed = leftMotor.getCurrentSpeed();
             currentStatus.currentRightMotorSpeed = rightMotor.getCurrentSpeed();
-            currentStatus.currentPumpStatus = pump.getCurrentPumpStatus();
+            currentStatus.currentPumpIntakeStatus = pumpIntake.getCurrentPumpStatus();
+            currentStatus.currentPumpOutflowStatus = pumpOutflow.getCurrentPumpStatus();
             currentStatus.isOperational = true; // This should be updated based on actual conditions
 
             // Implement additional error checks if necessary
@@ -101,19 +190,6 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
     }
 
     Serial.println("MotorCommands applied with PID control.");
-}
-
-// Update motor and pump based on received VelocityCommand
-void MotorControllerModule::update(const VelocityCommand &commands)
-{
-    // Map VelocityCommand to MotorCommand
-    MotorCommand motorCmd = mapVelocityToMotorCommand(commands);
-
-    // Define time delta (dt) for PID computation
-    float dt = 0.1f; // Assuming update is called at 10 Hz
-
-    // Apply Motor Commands with PID control
-    applyMotorCommands(motorCmd, dt);
 }
 
 // Get current status for logging or feedback

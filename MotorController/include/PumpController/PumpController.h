@@ -13,8 +13,9 @@ public:
      *
      * @param pwmPin GPIO pin for PWM control of the pump.
      * @param sensorPin GPIO pin for reading pump sensor feedback (ADC).
+     * @param channel_ LEDC channel number for this pump.
      */
-    PumpController(uint8_t pwmPin, uint8_t sensorPin);
+    PumpController(uint8_t pwmPin, uint8_t sensorPin, uint8_t channel_);
 
     /**
      * @brief Initialize the PumpController hardware and state.
@@ -24,14 +25,14 @@ public:
     /**
      * @brief Set the control value for the pump.
      *
-     * @param control Desired pump control value (-PUMP_MAX_CONTROL to +PUMP_MAX_CONTROL).
+     * @param control Desired pump control value (0.0 to 1.0).
      */
     void setControl(float control);
 
     /**
      * @brief Get the current pump status based on sensor feedback.
      *
-     * @return float Current pump status (m/s).
+     * @return float Current pump status (abstract units).
      */
     float getCurrentPumpStatus() const;
 
@@ -44,6 +45,7 @@ private:
     uint8_t pwmPin;
     uint8_t sensorPin;
     float pumpStatus;
+    uint8_t channel; // LEDC channel number
 
     // Control limits
     float maxControl;

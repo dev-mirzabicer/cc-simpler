@@ -13,11 +13,11 @@ public:
      * @brief Constructor for MotorDriver.
      *
      * @param pwmPin GPIO pin for PWM control of the motor.
-     * @param dirPin GPIO pin for direction control of the motor.
      * @param encoderPinA GPIO pin A for motor encoder.
      * @param encoderPinB GPIO pin B for motor encoder.
+     * @param channel_ LEDC channel number for this motor.
      */
-    MotorDriver(uint8_t pwmPin, uint8_t dirPin, uint8_t encoderPinA, uint8_t encoderPinB);
+    MotorDriver(uint8_t pwmPin, uint8_t encoderPinA, uint8_t encoderPinB, uint8_t channel_);
 
     /**
      * @brief Initialize the MotorDriver hardware and state.
@@ -47,10 +47,10 @@ public:
 
 private:
     uint8_t pwmPin;
-    uint8_t dirPin;
     Encoder encoder;
     long lastEncoderCount;
     float currentSpeed;
+    uint8_t channel; // LEDC channel number
 
     // Control limits
     float maxSpeed;

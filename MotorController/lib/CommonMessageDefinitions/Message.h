@@ -22,24 +22,26 @@ struct VelocityCommand
     float linearZ;  // Vertical movement (pump control) (m/s)
     float angularX; // Roll control (degrees/s)
     float angularY; // Pitch control (degrees/s)
-    float angularZ; // Yaw control (degrees/s)
+    float angularZ; // Yaw control (radians/s)
 } __attribute__((packed));
 
 // Struct for motor commands (internal mapping)
 struct MotorCommand
 {
-    float leftMotorSpeed;  // Desired speed for left motor (-10 to 10 m/s)
-    float rightMotorSpeed; // Desired speed for right motor (-10 to 10 m/s)
-    float pumpControl;     // Desired pump control (-5 to 5 m/s)
+    float leftMotorSpeed;     // Desired speed for left motor (-1.0 to 1.0 m/s)
+    float rightMotorSpeed;    // Desired speed for right motor (-1.0 to 1.0 m/s)
+    float pumpIntakeControl;  // Desired pump intake control (0.0 to 1.0)
+    float pumpOutflowControl; // Desired pump outflow control (0.0 to 1.0)
 } __attribute__((packed));
 
 // Struct for status updates
 struct Status
 {
     bool isOperational;
-    float currentLeftMotorSpeed;  // Current speed of left motor (m/s)
-    float currentRightMotorSpeed; // Current speed of right motor (m/s)
-    float currentPumpStatus;      // Current pump status (m/s)
+    float currentLeftMotorSpeed;    // Current speed of left motor (m/s)
+    float currentRightMotorSpeed;   // Current speed of right motor (m/s)
+    float currentPumpIntakeStatus;  // Current pump intake status (abstract units)
+    float currentPumpOutflowStatus; // Current pump outflow status (abstract units)
     // Add additional status fields as needed
 } __attribute__((packed));
 

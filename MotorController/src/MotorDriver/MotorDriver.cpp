@@ -2,11 +2,11 @@
 #include "../config.h"
 
 // Constructor
-MotorDriver::MotorDriver(uint8_t pwmPin_, uint8_t dirPin_, uint8_t encoderPinA_, uint8_t encoderPinB_)
-    : pwmPin(pwmPin_), dirPin(dirPin_), encoder(encoderPinA_, encoderPinB_),
+MotorDriver::MotorDriver(uint8_t pwmPin_, uint8_t encoderPinA_, uint8_t encoderPinB_, uint8_t channel_)
+    : pwmPin(pwmPin_), encoder(encoderPinA_, encoderPinB_),
       lastEncoderCount(0), currentSpeed(0.0f),
-      maxSpeed(LEFT_MOTOR_MAX_SPEED), minSpeed(LEFT_MOTOR_MIN_SPEED),
-      wheelCircumference(WHEEL_CIRCUMFERENCE), encoderCountsPerRev(ENCODER_COUNTS_PER_REV)
+      wheelCircumference(WHEEL_CIRCUMFERENCE), encoderCountsPerRev(ENCODER_COUNTS_PER_REV),
+      channel(channel_)
 {
     // Initialize mutex
     speedMutex = xSemaphoreCreateMutex();
@@ -14,16 +14,24 @@ MotorDriver::MotorDriver(uint8_t pwmPin_, uint8_t dirPin_, uint8_t encoderPinA_,
     {
         Serial.println("MotorDriver: Failed to create speedMutex.");
     }
+
+    // Set min and max speed
+    maxSpeed = 1.0f;  // m/s
+    minSpeed = -1.0f; // m/s
 }
 
 // Initialize MotorDriver
 void MotorDriver::init()
 {
-    pinMode(pwmPin, OUTPUT);
-    pinMode(dirPin, OUTPUT);
-    analogWrite(pwmPin, 0);    // Initialize PWM to 0
-    digitalWrite(dirPin, LOW); // Initialize direction to LOW
+    // Setup LEDC for PWM
+    ledcSetup(channel, PWM_FREQUENCY_MOTORS, PWM_RESOLUTION_MOTORS);
+    ledcAttachPin(pwmPin, channel);
 
+    // Initialize PWM to neutral (1.5 ms pulse)
+    // Map 0 m/s to 1.5 ms pulse -> 3277 counts
+    ledcWrite(channel, 3277);
+
+    pinMode(pwmPin, OUTPUT);
     encoder.write(0); // Reset encoder count
     lastEncoderCount = 0;
     currentSpeed = 0.0f;
@@ -31,39 +39,30 @@ void MotorDriver::init()
     Serial.println("MotorDriver initialized.");
 }
 
-// Set speed for motor (negative for reverse, positive for forward)
+// Set speed for motor (-1.0 to +1.0 m/s)
 void MotorDriver::setSpeed(float speed)
 {
     // Clamp speed to allowed range
-    speed = clamp(speed, minSpeed, maxSpeed);
+    speed = clamp(speed, -1.0f, 1.0f);
 
-    // Determine direction based on speed sign
-    if (speed >= 0.0f)
-    {
-        digitalWrite(dirPin, HIGH); // Forward
-    }
-    else
-    {
-        digitalWrite(dirPin, LOW); // Reverse
-        speed = -speed;            // Make speed positive for PWM mapping
-    }
+    // Map speed to PWM value
+    uint32_t pwmValue = mapFloat(speed, -1.0f, 1.0f, 1638, 4915); // 1.0m/s -> 2.0ms, -1.0m/s -> 1.0ms
+    pwmValue = (uint32_t)clamp((float)pwmValue, 1638.0f, 4915.0f);
 
-    // Map speed to PWM
-    float pwmValue = mapFloat(speed, 0.0f, maxSpeed, 0.0f, 255.0f);
-    pwmValue = clamp(pwmValue, 0.0f, 255.0f);
-    analogWrite(pwmPin, (uint8_t)pwmValue);
+    // Write to PWM channel
+    ledcWrite(channel, pwmValue);
 
-    // Update currentSpeed based on direction
+    // Update currentSpeed based on speed command
     {
         if (xSemaphoreTake(speedMutex, portMAX_DELAY) == pdTRUE)
         {
-            currentSpeed = (digitalRead(dirPin) == HIGH) ? speed : -speed;
+            currentSpeed = speed;
             xSemaphoreGive(speedMutex);
         }
     }
 
     Serial.print("Motor speed set to: ");
-    Serial.print(currentSpeed);
+    Serial.print(speed);
     Serial.println(" m/s");
 }
 
@@ -87,10 +86,11 @@ void MotorDriver::updateSpeed(float dt)
     lastEncoderCount = currentCount;
 
     // Calculate rotations per second
-    float rotations = (float)deltaCount / encoderCountsPerRev;
-    float speed = (rotations * wheelCircumference) / dt; // m/s
+    float rotations = ((float)deltaCount / encoderCountsPerRev) / dt; // rev/s
 
-    // Update currentSpeed
+    float speed = (rotations * wheelCircumference); // m/s
+
+    // Update currentSpeed based on encoder
     {
         if (xSemaphoreTake(speedMutex, portMAX_DELAY) == pdTRUE)
         {

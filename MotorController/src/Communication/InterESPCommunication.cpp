@@ -36,7 +36,7 @@ void InterESPCommunication::init()
     }
 
     // Initialize serializedStatusBuffer with default status
-    Status defaultStatus = {true, 0.0f, 0.0f, 0.0f};
+    Status defaultStatus = {true, 0.0f, 0.0f, 0.0f, 0.0f};
     Message defaultMsg;
     serializeStatus(defaultStatus, defaultMsg);
     memcpy(serializedStatusBuffer, &defaultMsg, sizeof(Message));

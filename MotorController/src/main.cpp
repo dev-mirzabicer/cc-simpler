@@ -25,9 +25,12 @@ void logCurrentStatus(const Status &status)
     Serial.print("Right Motor Speed: ");
     Serial.print(status.currentRightMotorSpeed);
     Serial.println(" m/s");
-    Serial.print("Pump Status: ");
-    Serial.print(status.currentPumpStatus);
-    Serial.println(" m/s");
+    Serial.print("Pump Intake Status: ");
+    Serial.print(status.currentPumpIntakeStatus);
+    Serial.println(" (abstract units)");
+    Serial.print("Pump Outflow Status: ");
+    Serial.print(status.currentPumpOutflowStatus);
+    Serial.println(" (abstract units)");
     Serial.println("==============================");
 }
 
@@ -84,7 +87,7 @@ void loop()
     vTaskDelay(portMAX_DELAY);
 }
 
-// Communication Task: Handles receiving VelocityCommands and enqueuing Status updates
+// Communication Task: Handles receiving VelocityCommands
 void CommunicationTask(void *pvParameters)
 {
     VelocityCommand receivedVelocity;
@@ -95,7 +98,7 @@ void CommunicationTask(void *pvParameters)
         if (interESPComm.receiveVelocityCommands(receivedVelocity))
         {
             // Update MotorController with received commands
-            motorController.update(receivedVelocity);
+            motorController.updateVelocityCommand(receivedVelocity);
             Serial.println("VelocityCommand processed.");
         }
 
@@ -104,13 +107,16 @@ void CommunicationTask(void *pvParameters)
     }
 }
 
-// Motor Control Task: Retrieves Status from MotorController and enqueues it for sending
+// Motor Control Task: Performs control steps and sends Status updates
 void MotorControlTask(void *pvParameters)
 {
     Status status;
 
     while (1)
     {
+        // Perform control step with dynamic dt
+        motorController.performControlStep();
+
         // Retrieve current status from MotorController
         status = motorController.getStatus();
 

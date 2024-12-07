@@ -2,9 +2,11 @@
 #include "../config.h"
 
 // Constructor
-PumpController::PumpController(uint8_t pwmPin_, uint8_t sensorPin_)
+PumpController::PumpController(uint8_t pwmPin_, uint8_t sensorPin_, uint8_t channel_)
     : pwmPin(pwmPin_), sensorPin(sensorPin_), pumpStatus(0.0f),
-      maxControl(PUMP_MAX_CONTROL), minControl(PUMP_MIN_CONTROL)
+      channel(channel_),
+      maxControl(1.0f), // 0.0 to 1.0
+      minControl(0.0f)
 {
     // Initialize mutex
     pumpMutex = xSemaphoreCreateMutex();
@@ -17,11 +19,17 @@ PumpController::PumpController(uint8_t pwmPin_, uint8_t sensorPin_)
 // Initialize PumpController
 void PumpController::init()
 {
-    pinMode(pwmPin, OUTPUT);
-    analogWrite(pwmPin, 0);    // Initialize PWM to 0
-    pinMode(sensorPin, INPUT); // Initialize sensor pin as input
+    // Setup LEDC for PWM
+    ledcSetup(channel, PWM_FREQUENCY_PUMPS, PWM_RESOLUTION_PUMPS);
+    ledcAttachPin(pwmPin, channel);
 
-    // Initialize pump status to neutral
+    // Initialize PWM to 0 (pump off)
+    ledcWrite(channel, 0);
+
+    pinMode(pwmPin, OUTPUT);
+    pinMode(sensorPin, INPUT);
+
+    // Initialize pump status to 0
     {
         if (xSemaphoreTake(pumpMutex, portMAX_DELAY) == pdTRUE)
         {
@@ -33,41 +41,31 @@ void PumpController::init()
     Serial.println("PumpController initialized.");
 }
 
-// Set control for pump (negative for suction, positive for pumping out)
+// Set control for pump (0.0 to +1.0)
 void PumpController::setControl(float control)
 {
     // Clamp control to allowed range
     control = clamp(control, minControl, maxControl);
 
-    // Determine direction based on control sign
-    if (control >= 0.0f)
-    {
-        // Forward direction (pumping out)
-        digitalWrite(pwmPin, HIGH); // Set direction to forward
-    }
-    else
-    {
-        // Reverse direction (suction)
-        digitalWrite(pwmPin, LOW); // Set direction to reverse
-        control = -control;        // Make control positive for PWM mapping
-    }
+    // Map control to PWM value (0 to 255 for 8-bit resolution)
+    uint32_t pwmValue = mapFloat(control, 0.0f, maxControl, 0, 255);
+    pwmValue = (uint32_t)clamp((float)pwmValue, 0.0f, 255.0f);
 
-    // Map control to PWM value
-    float pwmValue = mapFloat(control, 0.0f, maxControl, 0.0f, 255.0f);
-    pwmValue = clamp(pwmValue, 0.0f, 255.0f);
-    analogWrite(pwmPin, (uint8_t)pwmValue);
+    // Write to PWM channel
+    ledcWrite(channel, pwmValue);
 
     // Update pumpStatus based on control
     {
         if (xSemaphoreTake(pumpMutex, portMAX_DELAY) == pdTRUE)
         {
-            pumpStatus = (control > 0.0f) ? control : -control;
+            pumpStatus = control;
             xSemaphoreGive(pumpMutex);
         }
     }
 
     Serial.print("Pump control set to: ");
-    Serial.println(pumpStatus);
+    Serial.print(pumpStatus);
+    Serial.println(" (abstract units)");
 }
 
 // Get current pump status
@@ -89,7 +87,7 @@ float PumpController::readSensor() const
     int sensorValue = analogRead(sensorPin);
     // Assuming sensorValue ranges from 0-4095 (12-bit ADC)
     float voltage = sensorValue * (3.3f / 4095.0f); // Convert to voltage
-    // Map voltage to pump status (m/s) based on calibration
+    // Map voltage to pump status (abstract units)
     float status = mapFloat(clamp(voltage, 0.0f, 3.3f), 0.0f, 3.3f, minControl, maxControl);
     return status;
 }
