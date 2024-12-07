@@ -3,7 +3,7 @@
 #define ACOUSTICCOMM_H
 
 #include <Arduino.h>
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include <mutex>
 #include <queue>
 

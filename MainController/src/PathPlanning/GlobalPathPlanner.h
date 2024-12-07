@@ -2,7 +2,7 @@
 #define GLOBALPATHPLANNER_H
 
 #include <Arduino.h>
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include <vector>
 #include <queue>
 #include <functional>

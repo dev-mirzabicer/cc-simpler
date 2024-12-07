@@ -2,7 +2,7 @@
 #define MOTORCONTROLLER_H
 
 #include <Arduino.h>
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include "../Utils/Utilities.h"
 #include "../PID/PIDController.h"
 #include "MotorDriver.h"

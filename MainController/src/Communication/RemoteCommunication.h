@@ -5,7 +5,7 @@
 #include <Arduino.h>
 #include "InterESPCommunication.h"
 #include "AcousticComm.h" // Include AcousticComm
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include <AESLib.h>
 #include <ReedSolomon.h>
 #include <mutex>

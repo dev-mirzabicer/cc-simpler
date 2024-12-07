@@ -2,7 +2,7 @@
 #define DATAAGGREGATOR_H
 
 #include <Arduino.h>
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include "../Communication/InterESPCommunication.h"
 #include <mutex> // Include mutex for thread safety
 

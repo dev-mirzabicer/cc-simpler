@@ -2,7 +2,7 @@
 #define LOCALPATHADJUSTER_H
 
 #include <Arduino.h>
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include "../StateEstimation/StateEstimator.h"
 #include "../PathPlanning/GlobalPathPlanner.h"
 #include <vector>

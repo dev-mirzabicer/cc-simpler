@@ -2,7 +2,7 @@
 #define PATHFOLLOWER_H
 
 #include <Arduino.h>
-#include "../Utils/Message.h"
+#include "../CommonMessageDefinitions/Message.h"
 #include "../PID/PIDController.h"
 #include "../Communication/InterESPCommunication.h"
 #include "../PathPlanning/LocalPathAdjuster.h"
