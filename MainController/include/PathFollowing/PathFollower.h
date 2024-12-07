@@ -6,7 +6,8 @@
 #include "../PID/PIDController.h"
 #include "../Communication/InterESPCommunication.h"
 #include "../PathPlanning/LocalPathAdjuster.h"
-#include <mutex>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // Structure to hold velocity commands
 struct VelocityCommand
@@ -17,7 +18,7 @@ struct VelocityCommand
     float angularX; // Roll control (degrees/s)
     float angularY; // Pitch control (degrees/s)
     float angularZ; // Yaw control (degrees/s)
-};
+} __attribute__((packed));
 
 class PathFollower
 {
@@ -62,16 +63,15 @@ private:
     float maxAngularAccel;
 
     // Last known velocity command
-    mutable std::mutex velocityCmdMutex;
+    mutable SemaphoreHandle_t velocityCmdMutex;
     VelocityCommand lastVelocityCmdStored;
 
     // Helper functions
-    void computeVelocityCommands(const VelocityCommand &cmd);
     float clamp(float value, float minVal, float maxVal);
     float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
 
     // Mutex for protecting velocity commands
-    std::mutex motorMutex;
+    // (Removed std::mutex and replaced with FreeRTOS semaphore)
 };
 
 #endif // PATHFOLLOWER_H

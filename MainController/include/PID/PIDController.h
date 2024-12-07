@@ -2,7 +2,10 @@
 #define PIDCONTROLLER_H
 
 #include <Arduino.h>
-#include <mutex> // Include mutex for thread safety
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+// Ensure inclusion of FreeRTOS headers for SemaphoreHandle_t
 
 class PIDController
 {
@@ -11,7 +14,6 @@ public:
     void init();
     float compute(float setpoint, float measuredValue, float dt);
     void reset();
-    // Additional methods as needed
 
 private:
     float kp;
@@ -19,9 +21,8 @@ private:
     float kd;
     float previousError;
     float integral;
-    float integralLimit; // Maximum absolute value for integral term
-    std::mutex pidMutex; // Mutex for protecting PID calculations
-    // Private members for PID calculation
+    float integralLimit;
+    SemaphoreHandle_t pidMutex;
 };
 
 #endif // PIDCONTROLLER_H
