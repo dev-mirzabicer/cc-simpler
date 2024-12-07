@@ -60,6 +60,29 @@
 #define ENCODER_RIGHT_PIN_A 32 // GPIO pin for Right Motor Encoder A
 #define ENCODER_RIGHT_PIN_B 33 // GPIO pin for Right Motor Encoder B
 
+// Occupancy Grid Parameters
+#define OCCUPANCY_GRID_RESOLUTION 1.0f // Grid cell size (m)
+#define OCCUPANCY_GRID_SIZE_X 10       // Number of cells in X
+#define OCCUPANCY_GRID_SIZE_Y 10       // Number of cells in Y
+#define OCCUPANCY_GRID_SIZE_Z 5        // Number of cells in Z
+
+// DWA (Dynamic Window Approach) Parameters for LocalPathAdjuster
+#define DWA_MAX_LINEAR_SPEED 5.0f    // Maximum linear speed (m/s)
+#define DWA_MIN_LINEAR_SPEED -5.0f   // Minimum linear speed (m/s)
+#define DWA_MAX_LINEAR_ACCEL 2.0f    // Maximum linear acceleration (m/s²)
+#define DWA_MAX_LINEAR_DECEL 2.0f    // Maximum linear deceleration (m/s²)
+#define DWA_MAX_ANGULAR_SPEED 90.0f  // Maximum angular speed (degrees/s)
+#define DWA_MIN_ANGULAR_SPEED -90.0f // Minimum angular speed (degrees/s)
+#define DWA_MAX_ANGULAR_ACCEL 45.0f  // Maximum angular acceleration (degrees/s²)
+#define DWA_MAX_ANGULAR_DECEL 45.0f  // Maximum angular deceleration (degrees/s²)
+#define DWA_TIME_STEP 0.1f           // Time step for simulation (s)
+#define DWA_GOAL_THRESHOLD 1.0f      // Distance threshold to goal (m)
+#define DWA_OBSTACLE_THRESHOLD 1.0f  // Distance threshold for obstacle avoidance (m)
+#define DWA_HEADING_WEIGHT 0.5f      // Weight for heading alignment
+#define DWA_CLEARANCE_WEIGHT 0.3f    // Weight for obstacle clearance
+#define DWA_SMOOTHNESS_WEIGHT 0.1f   // Weight for command smoothness
+#define DWA_ENERGY_WEIGHT 0.1f       // Weight for energy efficiency
+
 // Encoder Counts per Revolution
 #define ENCODER_COUNTS_PER_REV 360
 

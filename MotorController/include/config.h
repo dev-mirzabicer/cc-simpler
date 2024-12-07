@@ -1,19 +1,19 @@
-#ifndef CONFIG_H
-#define CONFIG_H
+#ifndef MOTORCONTROLLER_CONFIG_H
+#define MOTORCONTROLLER_CONFIG_H
 
 // I2C Configuration
 #define I2C_SDA_PIN 21
 #define I2C_SCL_PIN 22
-#define I2C_SLAVE_ADDRESS 0x10 // MotorController I2C Address
+#define I2C_SLAVE_ADDRESS 0x10 // MotorController I2C Address (ensure it's unique)
 
-// PWM Configuration
+// PWM Configuration for Motors and Pump
 #define LEFT_MOTOR_PWM_PIN 18  // PWM pin for Left Motor
 #define LEFT_MOTOR_DIR_PIN 17  // Direction pin for Left Motor
 #define RIGHT_MOTOR_PWM_PIN 19 // PWM pin for Right Motor
 #define RIGHT_MOTOR_DIR_PIN 16 // Direction pin for Right Motor
 #define PUMP_PWM_PIN 5         // PWM pin for Pump
 
-// PID Parameters for Motors
+// PID Parameters for Motors and Pump
 #define LEFT_MOTOR_KP 1.0f
 #define LEFT_MOTOR_KI 0.0f
 #define LEFT_MOTOR_KD 0.1f
@@ -22,7 +22,6 @@
 #define RIGHT_MOTOR_KI 0.0f
 #define RIGHT_MOTOR_KD 0.1f
 
-// PID Parameters for Pump
 #define PUMP_KP 1.0f
 #define PUMP_KI 0.0f
 #define PUMP_KD 0.1f
@@ -37,7 +36,7 @@
 #define TASK_STACK_SIZE_MOTOR_CONTROL 4096
 #define TASK_STACK_SIZE_LOGGING 2048
 
-// PWM Frequency (in Hz)
+// PWM Frequency
 #define PWM_FREQUENCY 5000 // 5 kHz for smooth motor control
 
 // PWM Resolution
@@ -69,7 +68,7 @@
 // Pump Sensor Configuration
 #define PUMP_SENSOR_PIN 36 // Example ADC pin for Pump feedback
 
-// Additional global configurations
+// Additional Global Configurations
 // e.g., safety limits, timeout durations
 
-#endif // CONFIG_H
+#endif // MOTORCONTROLLER_CONFIG_H

@@ -7,7 +7,7 @@
 #include "../PathPlanning/GlobalPathPlanner.h"
 #include <vector>
 #include <cmath>
-#include <mutex> // Include mutex for thread safety
+#include <freertos/semphr.h> // Include FreeRTOS semaphore for thread safety
 
 // Structure to hold velocity commands
 struct VelocityCommand
@@ -20,15 +20,53 @@ struct VelocityCommand
     float angularZ; // Yaw control (degrees/s)
 };
 
-// Define maximum PWM values for commands if necessary
+// Structure for Waypoint
+struct Waypoint
+{
+    float x;   // Position X (m)
+    float y;   // Position Y (m)
+    float z;   // Position Z (m)
+    float yaw; // Orientation Yaw (degrees)
+};
+
+// Structure for Path
+struct Path
+{
+    std::vector<Waypoint> waypoints; // List of waypoints
+};
+
+// Structure for OccupancyGrid
+struct OccupancyGrid
+{
+    size_t sizeX;                  // Grid size in X dimension
+    size_t sizeY;                  // Grid size in Y dimension
+    size_t sizeZ;                  // Grid size in Z dimension
+    float resolution;              // Grid resolution (meters per cell)
+    std::vector<uint8_t> gridData; // 1D array representing 3D occupancy (0: free, 1: occupied)
+};
 
 class LocalPathAdjuster
 {
 public:
+    /**
+     * @brief Constructor for LocalPathAdjuster.
+     */
     LocalPathAdjuster();
+
+    /**
+     * @brief Initialize the LocalPathAdjuster.
+     */
     void init();
+
+    /**
+     * @brief Generate adjusted velocity commands based on current state, global path, and occupancy grid.
+     *
+     * @param currentState Current state of the AUV.
+     * @param globalPath Global path plan.
+     * @param occupancyGrid Environmental occupancy data.
+     * @return VelocityCommand Adjusted velocity command.
+     */
     VelocityCommand adjustPath(const State &currentState, const Path &globalPath, const OccupancyGrid &occupancyGrid);
-    // Additional methods as needed
 
 private:
     // DWA parameters
@@ -51,15 +89,15 @@ private:
     // Previous velocity commands for smoothness calculation
     VelocityCommand prevCmd;
 
+    // Semaphore for thread safety
+    SemaphoreHandle_t adjusterSemaphore;
+
     // DWA related functions
     bool isCollision(const State &simulatedState, const OccupancyGrid &occupancyGrid) const;
     float calculateCost(const State &simulatedState, const Path &globalPath) const;
     State simulateState(const State &currentState, const VelocityCommand &cmd, float dt) const;
     float distanceToClosestWaypoint(const State &simulatedState, const Path &globalPath) const;
-    float calculateSmoothness(const State &simulatedState) const;
-
-    // Mutex for thread safety
-    std::mutex adjusterMutex;
+    float calculateSmoothness(const VelocityCommand &cmd) const;
 
     // Helper functions
     float clamp(float value, float minVal, float maxVal) const;

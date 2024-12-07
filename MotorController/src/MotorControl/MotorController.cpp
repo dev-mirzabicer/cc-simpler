@@ -11,16 +11,23 @@ MotorControllerModule::MotorControllerModule()
       pidPump(PUMP_KP, PUMP_KI, PUMP_KD, 50.0f),
       currentStatus{false, 0.0f, 0.0f, 0.0f}
 {
-    // Initialize status as non-operational until init() is called
+    // Initialize mutex
+    statusMutex = xSemaphoreCreateMutex();
+    if (statusMutex == NULL)
+    {
+        Serial.println("MotorControllerModule: Failed to create statusMutex.");
+    }
 }
 
 // Initialize Motor Control Module
 void MotorControllerModule::init()
 {
+    // Initialize actuators
     leftMotor.init();
     rightMotor.init();
     pump.init();
 
+    // Initialize PID controllers
     pidLeftMotor.init();
     pidRightMotor.init();
     pidPump.init();
@@ -52,19 +59,6 @@ MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityComm
     return motorCmd;
 }
 
-// Update motor and pump based on received VelocityCommand
-void MotorControllerModule::update(const VelocityCommand &commands)
-{
-    // Map VelocityCommand to MotorCommand
-    MotorCommand motorCmd = mapVelocityCommand(commands);
-
-    // Define time delta (dt) for PID computation
-    float dt = 0.1f; // Assuming update is called at 10 Hz
-
-    // Apply Motor Commands with PID control
-    applyMotorCommands(motorCmd, dt);
-}
-
 // Apply MotorCommand to actuators using PID control
 void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, float dt)
 {
@@ -93,10 +87,11 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
             currentStatus.currentLeftMotorSpeed = leftMotor.getCurrentSpeed();
             currentStatus.currentRightMotorSpeed = rightMotor.getCurrentSpeed();
             currentStatus.currentPumpStatus = pump.getCurrentPumpStatus();
-            currentStatus.isOperational = true; // TODO Update based on actual conditions
+            currentStatus.isOperational = true; // This should be updated based on actual conditions
 
-            // TODO Implement additional error checks, exmpl:
-            // if (fabs(currentLeftMotorSpeed) > LEFT_MOTOR_MAX_SPEED * 0.9f) {
+            // Implement additional error checks if necessary
+            // For example:
+            // if (fabs(currentStatus.currentLeftMotorSpeed) > LEFT_MOTOR_MAX_SPEED * 0.9f) {
             //     currentStatus.isOperational = false;
             //     Serial.println("Left Motor approaching maximum speed!");
             // }
@@ -106,6 +101,19 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
     }
 
     Serial.println("MotorCommands applied with PID control.");
+}
+
+// Update motor and pump based on received VelocityCommand
+void MotorControllerModule::update(const VelocityCommand &commands)
+{
+    // Map VelocityCommand to MotorCommand
+    MotorCommand motorCmd = mapVelocityToMotorCommand(commands);
+
+    // Define time delta (dt) for PID computation
+    float dt = 0.1f; // Assuming update is called at 10 Hz
+
+    // Apply Motor Commands with PID control
+    applyMotorCommands(motorCmd, dt);
 }
 
 // Get current status for logging or feedback
@@ -118,4 +126,14 @@ Status MotorControllerModule::getStatus() const
         xSemaphoreGive(statusMutex);
     }
     return status;
+}
+
+// Helper function to clamp a value between min and max
+float MotorControllerModule::clamp(float value, float minVal, float maxVal)
+{
+    if (value < minVal)
+        return minVal;
+    if (value > maxVal)
+        return maxVal;
+    return value;
 }
