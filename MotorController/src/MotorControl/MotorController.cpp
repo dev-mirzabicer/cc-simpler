@@ -1,4 +1,5 @@
 #include "MotorController.h"
+#include "../config.h"
 
 // Constructor
 MotorControllerModule::MotorControllerModule()
@@ -26,8 +27,11 @@ void MotorControllerModule::init()
 
     // Initialize status as operational
     {
-        std::lock_guard<std::mutex> lock(statusMutex);
-        currentStatus.isOperational = true;
+        if (xSemaphoreTake(statusMutex, portMAX_DELAY) == pdTRUE)
+        {
+            currentStatus.isOperational = true;
+            xSemaphoreGive(statusMutex);
+        }
     }
 
     Serial.println("MotorControllerModule initialized.");
@@ -38,7 +42,7 @@ MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityComm
 {
     MotorCommand motorCmd;
     // Differential drive mapping
-    // angularZ controls yaw by adjusting left and right motor speeds inversely
+    // Assuming angularZ controls yaw by adjusting left and right motor speeds inversely
     motorCmd.leftMotorSpeed = clamp(velCmd.linearX - velCmd.angularZ, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
     motorCmd.rightMotorSpeed = clamp(velCmd.linearX + velCmd.angularZ, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
 
@@ -52,10 +56,10 @@ MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityComm
 void MotorControllerModule::update(const VelocityCommand &commands)
 {
     // Map VelocityCommand to MotorCommand
-    MotorCommand motorCmd = mapVelocityToMotorCommand(commands);
+    MotorCommand motorCmd = mapVelocityCommand(commands);
 
     // Define time delta (dt) for PID computation
-    float dt = 0.1f; // update is called at 10 Hz
+    float dt = 0.1f; // Assuming update is called at 10 Hz
 
     // Apply Motor Commands with PID control
     applyMotorCommands(motorCmd, dt);
@@ -84,18 +88,21 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
 
     // Update current status
     {
-        std::lock_guard<std::mutex> lock(statusMutex);
-        currentStatus.currentLeftMotorSpeed = leftMotor.getCurrentSpeed();
-        currentStatus.currentRightMotorSpeed = rightMotor.getCurrentSpeed();
-        currentStatus.currentPumpStatus = pump.getCurrentPumpStatus();
-        currentStatus.isOperational = true; // Update based on actual conditions
+        if (xSemaphoreTake(statusMutex, portMAX_DELAY) == pdTRUE)
+        {
+            currentStatus.currentLeftMotorSpeed = leftMotor.getCurrentSpeed();
+            currentStatus.currentRightMotorSpeed = rightMotor.getCurrentSpeed();
+            currentStatus.currentPumpStatus = pump.getCurrentPumpStatus();
+            currentStatus.isOperational = true; // TODO Update based on actual conditions
 
-        // Implement additional error checks if necessary
-        // For example:
-        // if (fabs(currentLeftMotorSpeed) > LEFT_MOTOR_MAX_SPEED * 0.9f) {
-        //     currentStatus.isOperational = false;
-        //     Serial.println("Left Motor approaching maximum speed!");
-        // }
+            // TODO Implement additional error checks, exmpl:
+            // if (fabs(currentLeftMotorSpeed) > LEFT_MOTOR_MAX_SPEED * 0.9f) {
+            //     currentStatus.isOperational = false;
+            //     Serial.println("Left Motor approaching maximum speed!");
+            // }
+
+            xSemaphoreGive(statusMutex);
+        }
     }
 
     Serial.println("MotorCommands applied with PID control.");
@@ -104,6 +111,11 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
 // Get current status for logging or feedback
 Status MotorControllerModule::getStatus() const
 {
-    std::lock_guard<std::mutex> lock(statusMutex);
-    return currentStatus;
+    Status status;
+    if (xSemaphoreTake(statusMutex, portMAX_DELAY) == pdTRUE)
+    {
+        status = currentStatus;
+        xSemaphoreGive(statusMutex);
+    }
+    return status;
 }
