@@ -21,6 +21,26 @@ void InterESPCommunication::init()
     Wire.onReceive([](int byteCount)
                    { InterESPCommunication::onReceiveWrapper(byteCount); });
     Serial.println("InterESPCommunication initialized as I2C Slave.");
+
+    // Create the mutexes
+    i2cMutex = xSemaphoreCreateMutex();
+    if (i2cMutex == NULL)
+    {
+        Serial.println("Failed to create I2C mutex.");
+    }
+
+    statusBufferMutex = xSemaphoreCreateMutex();
+    if (statusBufferMutex == NULL)
+    {
+        Serial.println("Failed to create statusBufferMutex.");
+    }
+
+    // Initialize serializedStatusBuffer with default status
+    Status defaultStatus = {true, 0.0f, 0.0f, 0.0f};
+    Message defaultMsg;
+    serializeStatus(defaultStatus, defaultMsg);
+    memcpy(serializedStatusBuffer, &defaultMsg, sizeof(Message));
+    serializedStatusLength = sizeof(Message);
 }
 
 // Static wrapper for onRequest
@@ -44,51 +64,44 @@ void InterESPCommunication::onReceiveWrapper(int byteCount)
 // Handle I2C Requests (send Status updates)
 void InterESPCommunication::handleRequest()
 {
-    std::lock_guard<std::mutex> lock(i2cMutex);
-    if (!statusQueue.empty())
+    // Minimal work in ISR: copy the serializedStatusBuffer to Wire buffer
+    if (xSemaphoreTake(statusBufferMutex, portMAX_DELAY) == pdTRUE)
     {
-        Status status = statusQueue.front();
-        statusQueue.pop();
+        Wire.write(serializedStatusBuffer, serializedStatusLength);
+        xSemaphoreGive(statusBufferMutex);
+    }
 
-        Message msg;
-        serializeStatus(status, msg);
-        Wire.write((uint8_t *)&msg, sizeof(Message));
-        Serial.println("Status message sent to MainController.");
-    }
-    else
-    {
-        // If no status to send, send a default status
-        Status defaultStatus = {true, 0.0f, 0.0f, 0.0f};
-        Message msg;
-        serializeStatus(defaultStatus, msg);
-        Wire.write((uint8_t *)&msg, sizeof(Message));
-        Serial.println("Default status message sent to MainController.");
-    }
+    Serial.println("Status message sent to MainController.");
 }
 
 // Handle I2C Receives (receive VelocityCommand)
 void InterESPCommunication::handleReceive(int byteCount)
 {
-    std::lock_guard<std::mutex> lock(i2cMutex);
-    if (byteCount < sizeof(Message))
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
     {
-        Serial.println("Received incomplete VelocityCommand message.");
-        return;
-    }
+        if (byteCount < sizeof(Message))
+        {
+            Serial.println("Received incomplete VelocityCommand message.");
+            xSemaphoreGive(i2cMutex);
+            return;
+        }
 
-    uint8_t buffer[MAX_PAYLOAD_SIZE];
-    size_t len = Wire.readBytes(buffer, sizeof(Message));
+        uint8_t buffer[MAX_PAYLOAD_SIZE];
+        size_t len = Wire.readBytes(buffer, sizeof(Message));
 
-    VelocityCommand commands;
-    bool success = deserializeVelocityCommand(buffer, len, commands);
-    if (success)
-    {
-        enqueueVelocityCommand(commands);
-        Serial.println("VelocityCommand received and enqueued.");
-    }
-    else
-    {
-        Serial.println("Failed to deserialize VelocityCommand.");
+        VelocityCommand commands;
+        bool success = deserializeVelocityCommand(buffer, len, commands);
+        if (success)
+        {
+            enqueueVelocityCommand(commands);
+            Serial.println("VelocityCommand received and enqueued.");
+        }
+        else
+        {
+            Serial.println("Failed to deserialize VelocityCommand.");
+        }
+
+        xSemaphoreGive(i2cMutex);
     }
 }
 
@@ -128,7 +141,7 @@ bool InterESPCommunication::dequeueStatus(Status &status)
     return false;
 }
 
-// Serialize Status into Message
+// Serialize Status into Message and store in serializedStatusBuffer
 void InterESPCommunication::serializeStatus(const Status &status, Message &msg)
 {
     msg.startByte = 0xAA; // Example start byte
@@ -179,13 +192,33 @@ bool InterESPCommunication::deserializeVelocityCommand(const uint8_t *buffer, si
 // Receive VelocityCommand from queue
 bool InterESPCommunication::receiveVelocityCommands(VelocityCommand &commands)
 {
-    std::lock_guard<std::mutex> lock(i2cMutex);
-    return dequeueVelocityCommand(commands);
+    bool success = false;
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
+    {
+        success = dequeueVelocityCommand(commands);
+        xSemaphoreGive(i2cMutex);
+    }
+    return success;
 }
 
-// Send Status by enqueuing it to the statusQueue
+// Send Status by enqueuing it to the statusQueue and preparing the serializedStatusBuffer
 void InterESPCommunication::sendStatus(const Status &status)
 {
-    std::lock_guard<std::mutex> lock(i2cMutex);
-    enqueueStatus(status);
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
+    {
+        enqueueStatus(status);
+
+        // Serialize the status and store in the buffer
+        Message msg;
+        serializeStatus(status, msg);
+
+        if (xSemaphoreTake(statusBufferMutex, portMAX_DELAY) == pdTRUE)
+        {
+            memcpy(serializedStatusBuffer, &msg, sizeof(Message));
+            serializedStatusLength = sizeof(Message);
+            xSemaphoreGive(statusBufferMutex);
+        }
+
+        xSemaphoreGive(i2cMutex);
+    }
 }
