@@ -1,3 +1,4 @@
+// Communication/MainController/src/main.cpp
 #include <Arduino.h>
 #include "config.h"
 #include "Communication/InterESPCommunication.h"
@@ -6,7 +7,7 @@
 #include "StateEstimation/StateEstimator.h"
 #include "PathPlanning/LocalPathAdjuster.h"
 #include "PathFollowing/PathFollower.h"
-#include "Utils/Message.h"
+#include "../lib/CommonMessageDefinitions/Message.h"
 
 // Instantiate modules
 InterESPCommunication interESPComm;
@@ -31,6 +32,10 @@ QueueHandle_t velocityCmdQueue;
 QueueHandle_t pathQueue;
 QueueHandle_t occupancyGridQueue;
 QueueHandle_t statusQueue; // New Queue for Status updates
+
+// Shared VelocityCommand and its mutex
+VelocityCommand currentVelocityCmd = {0, 0, 0, 0, 0, 0};
+SemaphoreHandle_t velocityCmdMutexHandle;
 
 // Function to log current state
 void logCurrentState(const State &state)
@@ -125,6 +130,15 @@ void setup()
             ; // Halt execution
     }
 
+    // Create a mutex for currentVelocityCmd
+    velocityCmdMutexHandle = xSemaphoreCreateMutex();
+    if (velocityCmdMutexHandle == NULL)
+    {
+        Serial.println("Failed to create velocityCmdMutexHandle.");
+        while (1)
+            ; // Halt execution
+    }
+
     // Create tasks
     xTaskCreate(
         SensorTask,
@@ -205,23 +219,22 @@ void SensorTask(void *pvParameters)
 void StateEstimationTask(void *pvParameters)
 {
     SensorData receivedData;
-    VelocityCommand currentVelocityCmd;
+    VelocityCommand currentVelocityCmdLocal = {0, 0, 0, 0, 0, 0};
 
     while (1)
     {
         // Receive sensor data from Sensor Task
         if (xQueueReceive(sensorDataQueue, &receivedData, portMAX_DELAY) == pdPASS)
         {
-            // Receive the latest velocity command from Motor Control Task
-            if (xQueuePeek(velocityCmdQueue, &currentVelocityCmd, 0) != pdPASS)
+            // Retrieve the latest VelocityCommand from shared variable
+            if (xSemaphoreTake(velocityCmdMutexHandle, portMAX_DELAY) == pdTRUE)
             {
-                // If no new velocity command, use last known
-                // Implemented via PathFollower's getLastVelocityCommand
-                currentVelocityCmd = pathFollower.getLastVelocityCommand();
+                currentVelocityCmdLocal = currentVelocityCmd;
+                xSemaphoreGive(velocityCmdMutexHandle);
             }
 
             // Estimate current state with sensor data and control inputs
-            stateEstimator.estimateState(receivedData, currentVelocityCmd);
+            stateEstimator.estimateState(receivedData, currentVelocityCmdLocal);
             State currentState = stateEstimator.getCurrentState();
 
             // Send current state to Logging Task via stateQueue
@@ -303,6 +316,13 @@ void PathFollowingTask(void *pvParameters)
             {
                 Serial.println("Failed to send velocity command to Motor Control Task.");
             }
+
+            // Update the shared currentVelocityCmd
+            if (xSemaphoreTake(velocityCmdMutexHandle, portMAX_DELAY) == pdTRUE)
+            {
+                currentVelocityCmd = cmd;
+                xSemaphoreGive(velocityCmdMutexHandle);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(10)); // Adjust as needed
@@ -323,7 +343,13 @@ void MotorControlTask(void *pvParameters)
             // Send VelocityCommand to Motor Controller via I2C
             if (interESPComm.sendVelocityCommand(receivedCmd))
             {
-                // Optionally, log successful transmission
+                // Update the shared currentVelocityCmd
+                if (xSemaphoreTake(velocityCmdMutexHandle, portMAX_DELAY) == pdTRUE)
+                {
+                    currentVelocityCmd = receivedCmd;
+                    xSemaphoreGive(velocityCmdMutexHandle);
+                }
+
                 Serial.println("VelocityCommand sent to Motor Controller.");
             }
             else
