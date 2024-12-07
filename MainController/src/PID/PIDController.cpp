@@ -1,89 +1,59 @@
-#include "PathFollower.h"
-#include "../config.h"
+#include "PIDController.h"
 
 // Constructor
-PathFollower::PathFollower()
-    : interESPComm(nullptr), localPathAdjuster(nullptr),
-      kp_linear(LEFT_MOTOR_KP), ki_linear(LEFT_MOTOR_KI), kd_linear(LEFT_MOTOR_KD),
-      kp_angular(RIGHT_MOTOR_KP), ki_angular(RIGHT_MOTOR_KI), kd_angular(RIGHT_MOTOR_KD),
-      currentWaypointIndex(0),
-      pidLinearX(kp_linear, ki_linear, kd_linear, 100.0f),
-      pidLinearY(kp_linear, ki_linear, kd_linear, 100.0f),
-      pidLinearZ(kp_linear, ki_linear, kd_linear, 50.0f),
-      pidAngularX(kp_angular, ki_angular, kd_angular, 50.0f),
-      pidAngularY(kp_angular, ki_angular, kd_angular, 50.0f),
-      pidAngularZ(kp_angular, ki_angular, kd_angular, 50.0f),
-      prevLinearX(0.0f),
-      prevLinearY(0.0f),
-      prevLinearZ(0.0f),
-      prevAngularX(0.0f),
-      prevAngularY(0.0f),
-      prevAngularZ(0.0f),
-      maxLinearAccel(5.0f),  // m/s²
-      maxAngularAccel(45.0f) // degrees/s²
+PIDController::PIDController(float kp_val, float ki_val, float kd_val, float integralLimit_val)
+    : kp(kp_val), ki(ki_val), kd(kd_val), previousError(0.0f), integral(0.0f), integralLimit(integralLimit_val)
 {
-    // Initialize PID controllers with parameters from config
-    velocityCmdMutex = xSemaphoreCreateMutex();
-    if (velocityCmdMutex == NULL)
+    // Initialize mutex
+    pidMutex = xSemaphoreCreateMutex();
+    if (pidMutex == NULL)
     {
-        Serial.println("Failed to create PathFollower mutex.");
+        Serial.println("Failed to create PIDController mutex.");
     }
 }
 
-void PathFollower::init(InterESPCommunication *comm, LocalPathAdjuster *adjuster)
+// Initialize PID Controller
+void PIDController::init()
 {
-    interESPComm = comm;
-    localPathAdjuster = adjuster;
-
-    // Initialize PID controllers
-    pidLinearX.init();
-    pidLinearY.init();
-    pidLinearZ.init();
-    pidAngularX.init();
-    pidAngularY.init();
-    pidAngularZ.init();
+    reset();
 }
 
-VelocityCommand PathFollower::followPath(const State &currentState, const Path &globalPath, const OccupancyGrid &occupancyGrid)
+// Compute PID Output
+float PIDController::compute(float setpoint, float measuredValue, float dt)
 {
-    // TODO Path Following Logic
-
-    // Placeholder for computed commands
-    VelocityCommand cmd = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 10.0f}; // Example values
-
-    // Update lastVelocityCmdStored with mutex
-    if (xSemaphoreTake(velocityCmdMutex, portMAX_DELAY) == pdTRUE)
+    if (xSemaphoreTake(pidMutex, portMAX_DELAY) == pdTRUE)
     {
-        lastVelocityCmdStored = cmd;
-        xSemaphoreGive(velocityCmdMutex);
+        float error = setpoint - measuredValue;
+        integral += error * dt;
+
+        // Anti-windup
+        if (integral > integralLimit)
+            integral = integralLimit;
+        else if (integral < -integralLimit)
+            integral = -integralLimit;
+
+        float derivative = (error - previousError) / dt;
+        previousError = error;
+
+        float output = (kp * error) + (ki * integral) + (kd * derivative);
+
+        xSemaphoreGive(pidMutex);
+        return output;
     }
-
-    return cmd;
-}
-
-VelocityCommand PathFollower::getLastVelocityCommand() const
-{
-    VelocityCommand cmd = {0, 0, 0, 0, 0, 0};
-    if (xSemaphoreTake(velocityCmdMutex, portMAX_DELAY) == pdTRUE)
+    else
     {
-        cmd = lastVelocityCmdStored;
-        xSemaphoreGive(velocityCmdMutex);
+        // If unable to take semaphore, return zero or previous output
+        return 0.0f;
     }
-    return cmd;
 }
 
-// Helper function to clamp a value between min and max
-float PathFollower::clamp(float value, float minVal, float maxVal)
+// Reset PID Controller
+void PIDController::reset()
 {
-    if (value < minVal)
-        return minVal;
-    if (value > maxVal)
-        return maxVal;
-    return value;
-}
-
-// Helper function to map a float from one range to another
-float PathFollower::mapFloat(float x, float in_min, float in_max, float out_min, float out_max)
-{
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+    if (xSemaphoreTake(pidMutex, portMAX_DELAY) == pdTRUE)
+    {
+        previousError = 0.0f;
+        integral = 0.0f;
+        xSemaphoreGive(pidMutex);
+    }
 }
