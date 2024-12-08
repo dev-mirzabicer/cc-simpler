@@ -1,18 +1,22 @@
 // Communication/MainController/src/main.cpp
-
 #include <Arduino.h>
 #include "config.h"
 #include "Communication/InterESPCommunication.h"
-#include "Communication/RemoteCommunication.h"
+#include "Communication/AcousticCommunication.h" // Updated include
 #include "DataAggregation/DataAggregator.h"
 #include "StateEstimation/StateEstimator.h"
 #include "PathPlanning/LocalPathAdjuster.h"
 #include "PathFollowing/PathFollower.h"
 #include "../lib/CommonMessageDefinitions/Message.h"
 
+// Define Acoustic Communication Pins
+#define ACOUSTIC_TX_PIN 3 // Example TX pin (adjust as per hardware)
+#define ACOUSTIC_RX_PIN 5 // Example RX pin (adjust as per hardware)
+
 // Instantiate modules
 InterESPCommunication interESPComm;
-RemoteCommunication remoteComm(17, 16); // TX_PIN = 17, RX_PIN = 16
+AcousticCommunication acousticComm(ACOUSTIC_TX_PIN, ACOUSTIC_RX_PIN); // New AcousticCommunication instance
+// RemoteCommunication remoteComm(17, 16); // Removed
 DataAggregator dataAggregator;
 StateEstimator stateEstimator;
 LocalPathAdjuster localPathAdjuster;
@@ -107,7 +111,9 @@ void setup()
 
     // Initialize all modules
     interESPComm.init();
-    remoteComm.init(CommunicationMethod::Acoustic);
+    // remoteComm.init(CommunicationMethod::Acoustic); // Removed
+    acousticComm.init();           // Initialize AcousticCommunication
+    acousticComm.startTasks(3, 3); // Start AcousticCommunication tasks with appropriate priorities
     dataAggregator.init(&interESPComm);
     stateEstimator.init();
     localPathAdjuster.init();
@@ -191,7 +197,7 @@ void setup()
 
 void loop()
 {
-    remoteComm.processIncomingData();
+    // Since all tasks are managed by FreeRTOS, loop can remain empty or handle low-priority tasks
     vTaskDelay(portMAX_DELAY);
 }
 
@@ -224,8 +230,18 @@ void StateEstimationTask(void *pvParameters)
         // Receive sensor data from Sensor Task
         if (xQueueReceive(sensorDataQueue, &receivedData, portMAX_DELAY) == pdPASS)
         {
+            // Dynamic Time Step Calculation
+            static unsigned long lastTime = 0;
+            unsigned long currentTime = millis();
+            float dt = (currentTime - lastTime) / 1000.0f; // Convert to seconds
+            if (dt <= 0.0f)
+            {
+                dt = 0.1f; // Default to 0.1s if invalid
+            }
+            lastTime = currentTime;
+
             // Perform prediction with IMU data
-            stateEstimator.predict(receivedData.ax, receivedData.ay, receivedData.az, receivedData.gyroZ, 0.1f); // Assuming dt = 0.1s
+            stateEstimator.predict(receivedData.ax, receivedData.ay, receivedData.az, receivedData.gyroZ, dt);
 
             // Perform update with measurements
             stateEstimator.update(receivedData.depth, receivedData.yaw);
@@ -251,36 +267,91 @@ void CommunicationTask(void *pvParameters)
 {
     while (1)
     {
-        // Process any received commands from Remote Communication
-        remoteComm.processReceivedCommands();
-
-        // Check if a new path is available and send it to Path Following Task
-        Path receivedPath;
-        if (remoteComm.receivePath(receivedPath))
+        // Process any received commands from AcousticCommunication
+        Message receivedMsg;
+        while (acousticComm.receiveMessage(receivedMsg))
         {
-            if (xQueueSend(pathQueue, &receivedPath, portMAX_DELAY) != pdPASS)
+            // Handle different message types
+            switch (receivedMsg.type)
             {
-                Serial.println("Failed to send path to Path Following Task.");
+            case MessageType::VELOCITY_COMMAND:
+            {
+                VelocityCommand cmd;
+                if (receivedMsg.length >= sizeof(VelocityCommand))
+                {
+                    memcpy(&cmd, receivedMsg.payload, sizeof(VelocityCommand));
+                    // Enqueue VelocityCommand for PathFollowingTask
+                    if (xQueueSend(velocityCmdQueue, &cmd, portMAX_DELAY) != pdPASS)
+                    {
+                        Serial.println("Failed to enqueue VelocityCommand.");
+                    }
+                    else
+                    {
+                        Serial.println("VelocityCommand received via AcousticCommunication and enqueued.");
+                    }
+                }
+                else
+                {
+                    Serial.println("Received VelocityCommand with insufficient payload.");
+                }
+                break;
             }
-            else
+            case MessageType::SENSOR_DATA:
             {
-                Serial.println("Path received and sent to Path Following Task.");
+                SensorData data;
+                if (receivedMsg.length >= sizeof(SensorData))
+                {
+                    memcpy(&data, receivedMsg.payload, sizeof(SensorData));
+                    // Enqueue SensorData for SensorTask or StateEstimationTask
+                    if (xQueueSend(sensorDataQueue, &data, portMAX_DELAY) != pdPASS)
+                    {
+                        Serial.println("Failed to enqueue SensorData.");
+                    }
+                    else
+                    {
+                        Serial.println("SensorData received via AcousticCommunication and enqueued.");
+                    }
+                }
+                else
+                {
+                    Serial.println("Received SensorData with insufficient payload.");
+                }
+                break;
+            }
+            case MessageType::STATUS_UPDATE:
+            {
+                Status status;
+                if (receivedMsg.length >= sizeof(Status))
+                {
+                    memcpy(&status, receivedMsg.payload, sizeof(Status));
+                    // Enqueue Status for LoggingTask
+                    if (xQueueSend(statusQueue, &status, portMAX_DELAY) != pdPASS)
+                    {
+                        Serial.println("Failed to enqueue Status.");
+                    }
+                    else
+                    {
+                        Serial.println("Status received via AcousticCommunication and enqueued.");
+                    }
+                }
+                else
+                {
+                    Serial.println("Received Status with insufficient payload.");
+                }
+                break;
+            }
+            default:
+                Serial.println("Received unknown MessageType via AcousticCommunication.");
+                break;
             }
         }
 
-        // Check if a new occupancy grid is available and send it to Path Following Task
-        OccupancyGrid receivedGrid;
-        if (remoteComm.receiveOccupancyGrid(receivedGrid))
-        {
-            if (xQueueSend(occupancyGridQueue, &receivedGrid, portMAX_DELAY) != pdPASS)
-            {
-                Serial.println("Failed to send Occupancy Grid to Path Following Task.");
-            }
-            else
-            {
-                Serial.println("Occupancy Grid received and sent to Path Following Task.");
-            }
-        }
+        // Check if a new path is available from AcousticCommunication
+        // Assuming Path and OccupancyGrid are sent via separate message types or encapsulated in payloads
+        // This depends on your MessageType definitions
+        // For simplicity, assume separate message types or combined in Payload
+
+        // Add any additional communication handling as needed
 
         vTaskDelay(pdMS_TO_TICKS(100)); // Adjust as needed
     }
