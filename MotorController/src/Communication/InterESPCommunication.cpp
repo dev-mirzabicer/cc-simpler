@@ -74,14 +74,14 @@ void InterESPCommunication::handleRequest()
     Serial.println("Status message sent to MainController.");
 }
 
-// Handle I2C Receives (receive VelocityCommand)
+// Handle I2C Receives (receive VelocityCommand or SensorData)
 void InterESPCommunication::handleReceive(int byteCount)
 {
     if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
     {
         if (byteCount < sizeof(Message))
         {
-            Serial.println("Received incomplete VelocityCommand message.");
+            Serial.println("Received incomplete message.");
             xSemaphoreGive(i2cMutex);
             return;
         }
@@ -89,16 +89,50 @@ void InterESPCommunication::handleReceive(int byteCount)
         uint8_t buffer[MAX_PAYLOAD_SIZE];
         size_t len = Wire.readBytes(buffer, sizeof(Message));
 
-        VelocityCommand commands;
-        bool success = deserializeVelocityCommand(buffer, len, commands);
+        Message msg;
+        bool success = deserializeMessage(buffer, len, msg);
         if (success)
         {
-            enqueueVelocityCommand(commands);
-            Serial.println("VelocityCommand received and enqueued.");
+            switch (msg.type)
+            {
+            case MessageType::VELOCITY_COMMAND:
+            {
+                VelocityCommand commands;
+                if (msg.length >= sizeof(VelocityCommand))
+                {
+                    memcpy(&commands, msg.payload, sizeof(VelocityCommand));
+                    enqueueVelocityCommand(commands);
+                    Serial.println("VelocityCommand received and enqueued.");
+                }
+                else
+                {
+                    Serial.println("VelocityCommand payload size mismatch.");
+                }
+                break;
+            }
+            case MessageType::SENSOR_DATA:
+            {
+                SensorData data;
+                if (msg.length >= sizeof(SensorData))
+                {
+                    memcpy(&data, msg.payload, sizeof(SensorData));
+                    enqueueSensorData(data);
+                    Serial.println("SensorData received and enqueued.");
+                }
+                else
+                {
+                    Serial.println("SensorData payload size mismatch.");
+                }
+                break;
+            }
+            default:
+                Serial.println("Unknown message type received.");
+                break;
+            }
         }
         else
         {
-            Serial.println("Failed to deserialize VelocityCommand.");
+            Serial.println("Failed to deserialize message.");
         }
 
         xSemaphoreGive(i2cMutex);
@@ -111,6 +145,12 @@ void InterESPCommunication::enqueueVelocityCommand(const VelocityCommand &cmd)
     velocityCommandQueue.push(cmd);
 }
 
+// Enqueue received SensorData
+void InterESPCommunication::enqueueSensorData(const SensorData &data)
+{
+    sensorDataQueue.push(data);
+}
+
 // Dequeue VelocityCommand for processing
 bool InterESPCommunication::dequeueVelocityCommand(VelocityCommand &cmd)
 {
@@ -118,6 +158,18 @@ bool InterESPCommunication::dequeueVelocityCommand(VelocityCommand &cmd)
     {
         cmd = velocityCommandQueue.front();
         velocityCommandQueue.pop();
+        return true;
+    }
+    return false;
+}
+
+// Dequeue SensorData for processing
+bool InterESPCommunication::dequeueSensorData(SensorData &data)
+{
+    if (!sensorDataQueue.empty())
+    {
+        data = sensorDataQueue.front();
+        sensorDataQueue.pop();
         return true;
     }
     return false;
@@ -152,40 +204,25 @@ void InterESPCommunication::serializeStatus(const Status &status, Message &msg)
     msg.checksum = calculateCRC16(msg.payload, msg.length);
 }
 
-// Deserialize VelocityCommand from buffer
-bool InterESPCommunication::deserializeVelocityCommand(const uint8_t *buffer, size_t length, VelocityCommand &commands)
+// Deserialize Message from buffer
+bool InterESPCommunication::deserializeMessage(const uint8_t *buffer, size_t length, Message &msg)
 {
     if (length < sizeof(Message))
     {
-        Serial.println("VelocityCommand message size mismatch.");
+        Serial.println("Message size mismatch.");
         return false;
     }
 
-    Message msg;
     memcpy(&msg, buffer, sizeof(Message));
 
     // Verify checksum
     uint16_t computedChecksum = calculateCRC16(msg.payload, msg.length);
     if (computedChecksum != msg.checksum)
     {
-        Serial.println("VelocityCommand checksum mismatch.");
+        Serial.println("Message checksum mismatch.");
         return false;
     }
 
-    if (msg.type != MessageType::VELOCITY_COMMAND)
-    {
-        Serial.println("Incorrect message type for VelocityCommand.");
-        return false;
-    }
-
-    // Deserialize VelocityCommand
-    if (msg.length > sizeof(VelocityCommand))
-    {
-        Serial.println("VelocityCommand payload size mismatch.");
-        return false;
-    }
-
-    memcpy(&commands, msg.payload, sizeof(VelocityCommand));
     return true;
 }
 
@@ -196,6 +233,18 @@ bool InterESPCommunication::receiveVelocityCommands(VelocityCommand &commands)
     if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
     {
         success = dequeueVelocityCommand(commands);
+        xSemaphoreGive(i2cMutex);
+    }
+    return success;
+}
+
+// Receive SensorData from queue
+bool InterESPCommunication::receiveSensorData(SensorData &data)
+{
+    bool success = false;
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
+    {
+        success = dequeueSensorData(data);
         xSemaphoreGive(i2cMutex);
     }
     return success;

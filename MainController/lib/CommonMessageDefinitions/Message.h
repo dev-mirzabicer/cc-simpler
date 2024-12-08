@@ -9,8 +9,9 @@
 // Enumeration for message types
 enum class MessageType
 {
-    VELOCITY_COMMAND = 1, // Matches MainController
-    STATUS_UPDATE = 2,
+    VELOCITY_COMMAND = 1, // Matches MotorController
+    SENSOR_DATA = 2,      // New: Sensor data from SensorController
+    STATUS_UPDATE = 3,    // Status updates from MotorController
     // Add additional message types as needed
 };
 
@@ -18,20 +19,18 @@ enum class MessageType
 struct VelocityCommand
 {
     float linearX;  // Forward/backward movement (m/s)
-    float linearY;  // Lateral movement (m/s) - Optional
-    float linearZ;  // Vertical movement (pump control) (m/s)
-    float angularX; // Roll control (degrees/s)
-    float angularY; // Pitch control (degrees/s)
-    float angularZ; // Yaw control (radians/s)
+    float angularZ; // Yaw control (rad/s)
 } __attribute__((packed));
 
-// Struct for motor commands (internal mapping)
-struct MotorCommand
+// Struct for sensor data
+struct SensorData
 {
-    float leftMotorSpeed;     // Desired speed for left motor (-1.0 to 1.0 m/s)
-    float rightMotorSpeed;    // Desired speed for right motor (-1.0 to 1.0 m/s)
-    float pumpIntakeControl;  // Desired pump intake control (0.0 to 1.0)
-    float pumpOutflowControl; // Desired pump outflow control (0.0 to 1.0)
+    float ax;    // Acceleration in body X (m/s²)
+    float ay;    // Acceleration in body Y (m/s²)
+    float az;    // Acceleration in body Z (m/s²)
+    float gyroZ; // Yaw rate (rad/s)
+    float yaw;   // Absolute yaw from magnetometer (rad)
+    float depth; // Depth from pressure sensor (m)
 } __attribute__((packed));
 
 // Struct for status updates
@@ -42,7 +41,6 @@ struct Status
     float currentRightMotorSpeed;   // Current speed of right motor (m/s)
     float currentPumpIntakeStatus;  // Current pump intake status (abstract units)
     float currentPumpOutflowStatus; // Current pump outflow status (abstract units)
-    // Add additional status fields as needed
 } __attribute__((packed));
 
 // Struct for messages

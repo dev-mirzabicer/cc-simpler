@@ -2,69 +2,95 @@
 #define STATEESTIMATOR_H
 
 #include <Arduino.h>
-#include "../CommonMessageDefinitions/Message.h"
-#include <TinyEKF.h>
-#include <mutex> // Include mutex for thread safety
 
-// Define state, measurement, and control dimensions
-const size_t STATE_SIZE = 15;      // [x, y, z, vx, vy, vz, roll, pitch, yaw, ax, ay, az, angularVx, angularVy, angularVz]
-const size_t MEASUREMENT_SIZE = 7; // [z, roll, pitch, yaw, ax, ay, az]
-const size_t CONTROL_SIZE = 6;     // [linearX, linearY, linearZ, angularX, angularY, angularZ]
-
-// Structure for state estimation
-struct State
-{
-    float x;         // X position (meters)
-    float y;         // Y position (meters)
-    float z;         // Z position (depth in meters)
-    float vx;        // Velocity in X (m/s)
-    float vy;        // Velocity in Y (m/s)
-    float vz;        // Velocity in Z (m/s)
-    float roll;      // Roll angle (degrees)
-    float pitch;     // Pitch angle (degrees)
-    float yaw;       // Yaw angle (degrees)
-    float ax;        // Acceleration in X (m/s²)
-    float ay;        // Acceleration in Y (m/s²)
-    float az;        // Acceleration in Z (m/s²)
-    float angularVx; // Roll rate (degrees/s)
-    float angularVy; // Pitch rate (degrees/s)
-    float angularVz; // Yaw rate (degrees/s)
-    float velocity;  // Current speed (m/s)
-} __attribute__((packed));
+/**
+ * @brief StateEstimator implements an Extended Kalman Filter for submarine state estimation.
+ *
+ * State vector (X): [x, y, z, vx, vy, vz, yaw, yaw_rate]
+ * Control input (u): [ax_body, ay_body, az_body, gyro_z]
+ * Measurement (Z): [z_measured (depth), yaw_measured (magnetometer yaw)]
+ */
 
 class StateEstimator
 {
 public:
     StateEstimator();
     void init();
-    void estimateState(const SensorData &data, const VelocityCommand &controlCmd);
-    State getCurrentState() const;
-    // Additional methods as needed
+
+    /**
+     * @brief Perform the prediction step of the EKF given IMU inputs and a time delta.
+     *
+     * @param ax_body Acceleration in body X [m/s²]
+     * @param ay_body Acceleration in body Y [m/s²]
+     * @param az_body Acceleration in body Z [m/s²]
+     * @param gyro_z Angular velocity about Z [rad/s]
+     * @param dt Time step [s]
+     */
+    void predict(float ax_body, float ay_body, float az_body, float gyro_z, float dt);
+
+    /**
+     * @brief Perform the update step of the EKF given depth and yaw measurements.
+     *
+     * @param z_measured Depth measurement [m]
+     * @param yaw_measured Yaw measurement [rad]
+     */
+    void update(float z_measured, float yaw_measured);
+
+    /**
+     * @brief Get the current estimated state.
+     *
+     * @param state_out Pointer to array of size 8 to receive [x, y, z, vx, vy, vz, yaw, yaw_rate]
+     */
+    void getState(float *state_out) const;
+
+    /**
+     * @brief Get the current state covariance matrix.
+     *
+     * @param P_out Pointer to array of size 64 to receive the 8x8 covariance matrix (row-major)
+     */
+    void getCovariance(float *P_out) const;
 
 private:
-    State currentState;
-    // EKF variables
-    TinyEKF ekf;
+    // State dimension
+    static const int N = 8;
+    // Measurement dimension
+    static const int M = 2;
 
-    float stateVec[STATE_SIZE];
-    float covarianceMatrix[STATE_SIZE * STATE_SIZE];
-    float measurementVec[MEASUREMENT_SIZE];
-    float processNoiseMatrix[STATE_SIZE * STATE_SIZE];
-    float measurementNoiseMatrix[MEASUREMENT_SIZE * MEASUREMENT_SIZE];
-    float kalmanGainMatrix[STATE_SIZE * MEASUREMENT_SIZE];
-    float tmpVec[STATE_SIZE];
+    float X[N];     // State vector
+    float P[N * N]; // State covariance
 
-    // Mutex for protecting state variables
-    mutable std::mutex stateMutex;
+    float Q[N * N]; // Process noise covariance
+    float R[M * M]; // Measurement noise covariance
 
-    // Process model: state transition function
-    void processModel(float *x, const float *u, float dt);
+    // Temporary arrays for operations
+    float Fx[N * N]; // Jacobian wrt X
+    float H[M * N];  // Measurement Jacobian
+    float K[N * M];  // Kalman gain
+    float I[N * N];  // Identity
 
-    // Measurement model: measurement function
-    void measurementModel(const float *x, float *z);
+    // Standard deviations for process noise
+    // Adjust these parameters as needed for tuning:
+    float sigma_ax;
+    float sigma_ay;
+    float sigma_az;
+    float sigma_gyro_z;
 
-    void populateMeasurement(const SensorData &data);
-    void populateControl(const VelocityCommand &controlCmd, float *control);
+    // Standard deviations for measurement noise
+    float sigma_z;
+    float sigma_yaw;
+
+    // Matrix utility functions
+    void setIdentity(float *A, int n);
+    void setZero(float *A, int rows, int cols);
+    void copyMatrix(const float *src, float *dst, int rows, int cols);
+    void addMatrix(const float *A, const float *B, float *C, int rows, int cols);
+    void subMatrix(const float *A, const float *B, float *C, int rows, int cols);
+    void mulMatrix(const float *A, const float *B, float *C, int rA, int cA, int cB);
+    void mulTransB(const float *A, const float *B, float *C, int rA, int cA, int cB);
+    void mulTransA(const float *A, const float *B, float *C, int rA, int cA, int cB);
+    bool invertMatrix(float *A, int n); // In-place matrix inversion
+
+    float clampAngle(float angle);
 };
 
 #endif // STATEESTIMATOR_H
