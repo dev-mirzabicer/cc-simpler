@@ -255,6 +255,18 @@ void StateEstimationTask(void *pvParameters)
                 Serial.println("Failed to send state data to Logging Task.");
             }
 
+            // Optionally, send state to remote computer via AcousticCommunication
+            // Construct a Message to send
+            Message msgToSend;
+            msgToSend.type = MessageType::STATE_UPDATE;
+            msgToSend.length = sizeof(estimatedState);
+            memcpy(msgToSend.payload, estimatedState, sizeof(estimatedState));
+            msgToSend.checksum = stateEstimator.computeCRC(reinterpret_cast<const uint8_t *>(estimatedState), sizeof(estimatedState));
+
+            // Send the Message
+            acousticComm.sendMessage(msgToSend);
+            Serial.println("State update sent via AcousticCommunication.");
+
             Serial.println("StateEstimator: Prediction and Update performed.");
         }
 

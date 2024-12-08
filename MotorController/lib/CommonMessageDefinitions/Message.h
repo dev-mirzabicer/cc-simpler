@@ -9,9 +9,10 @@
 // Enumeration for message types
 enum class MessageType
 {
-    VELOCITY_COMMAND = 1, // Matches MotorController
-    SENSOR_DATA = 2,      // New: Sensor data from SensorController
+    VELOCITY_COMMAND = 1, // Controls submarine movement
+    SENSOR_DATA = 2,      // Sends sensor data to submarine
     STATUS_UPDATE = 3,    // Status updates from MotorController
+    STATE_UPDATE = 4,     // Sends estimated state to remote computer
     // Add additional message types as needed
 };
 
@@ -41,6 +42,19 @@ struct Status
     float currentRightMotorSpeed;   // Current speed of right motor (m/s)
     float currentPumpIntakeStatus;  // Current pump intake status (abstract units)
     float currentPumpOutflowStatus; // Current pump outflow status (abstract units)
+} __attribute__((packed));
+
+// Struct for state updates (sent to remote computer)
+struct StateUpdate
+{
+    float x;        // Position X (m)
+    float y;        // Position Y (m)
+    float z;        // Position Z (m)
+    float vx;       // Velocity X (m/s)
+    float vy;       // Velocity Y (m/s)
+    float vz;       // Velocity Z (m/s)
+    float yaw;      // Yaw (rad)
+    float yaw_rate; // Yaw rate (rad/s)
 } __attribute__((packed));
 
 // Struct for messages
