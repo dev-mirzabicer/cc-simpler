@@ -13,7 +13,8 @@ enum class MessageType
     SENSOR_DATA = 2,      // Sends sensor data to submarine
     STATUS_UPDATE = 3,    // Status updates from MotorController
     STATE_UPDATE = 4,     // Sends estimated state to remote computer
-    // Add additional message types as needed
+    OCCUPANCY_GRID_UPDATE = 5,
+    DIAGNOSTIC_UPDATE = 6
 };
 
 // Struct for velocity commands
@@ -26,12 +27,15 @@ struct VelocityCommand
 // Struct for sensor data
 struct SensorData
 {
-    float ax;    // Acceleration in body X (m/s²)
-    float ay;    // Acceleration in body Y (m/s²)
-    float az;    // Acceleration in body Z (m/s²)
-    float gyroZ; // Yaw rate (rad/s)
-    float yaw;   // Absolute yaw from magnetometer (rad)
-    float depth; // Depth from pressure sensor (m)
+    float ax;                    // Acceleration in body X (m/s²)
+    float ay;                    // Acceleration in body Y (m/s²)
+    float az;                    // Acceleration in body Z (m/s²)
+    float gyroZ;                 // Yaw rate (rad/s)
+    float yaw;                   // Absolute yaw from magnetometer (rad)
+    float depth;                 // Depth from pressure sensor (m)
+    float forwardSonarDist;      // m
+    float oscillatingSonarDist;  // m
+    float oscillatingSonarAngle; // rad [-π/3, π/3]
 } __attribute__((packed));
 
 // Struct for status updates
@@ -65,6 +69,21 @@ struct Message
     uint16_t length;                   // Length of payload
     uint8_t payload[MAX_PAYLOAD_SIZE]; // Payload data
     uint16_t checksum;                 // CRC16 checksum for error detection
+} __attribute__((packed));
+
+// For OCCUPANCY_GRID_UPDATE, we pack changed cells as int16_t.
+struct ChangedCellMessage
+{
+    uint8_t count; // number of changed cells
+    // Followed by count*(x,y,z) as int16_t triplets
+    // max 15 cells
+} __attribute__((packed));
+
+// For DIAGNOSTIC_UPDATE, 1 byte with bits for sensor health.
+struct DiagnosticMessage
+{
+    // bit0=IMU, bit1=Mag, bit2=Pressure, bit3=ForwardSonar, bit4=OscSonar
+    uint8_t healthBits;
 } __attribute__((packed));
 
 // Function to calculate CRC16 checksum

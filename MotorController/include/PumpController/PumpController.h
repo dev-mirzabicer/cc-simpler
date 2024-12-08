@@ -1,38 +1,40 @@
-#ifndef PUMPCONTROLLER_H
-#define PUMPCONTROLLER_H
+// PumpController.h
+#ifndef PUMP_CONTROLLER_H
+#define PUMP_CONTROLLER_H
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+/**
+ * @brief The PumpController class controls a single pump via PWM and direction control, and reads sensor status.
+ */
 class PumpController
 {
 public:
     /**
      * @brief Constructor for PumpController.
-     *
-     * @param pwmPin GPIO pin for PWM control of the pump.
-     * @param sensorPin GPIO pin for reading pump sensor feedback (ADC).
-     * @param channel_ LEDC channel number for this pump.
+     * @param pwmPin_ GPIO pin for PWM signal.
+     * @param dirPin_ GPIO pin for direction control.
+     * @param sensorPin_ GPIO pin for sensor input.
+     * @param channel_ LEDC channel for PWM.
      */
-    PumpController(uint8_t pwmPin, uint8_t sensorPin, uint8_t channel_);
+    PumpController(uint8_t pwmPin_, uint8_t dirPin_, uint8_t sensorPin_, uint8_t channel_);
 
     /**
-     * @brief Initialize the PumpController hardware and state.
+     * @brief Initialize the pump controller hardware.
      */
     void init();
 
     /**
-     * @brief Set the control value for the pump.
-     *
-     * @param control Desired pump control value (0.0 to 1.0).
+     * @brief Set the pump control.
+     * @param control Control value in [0.0, 1.0]. Higher values increase pump speed.
      */
     void setControl(float control);
 
     /**
-     * @brief Get the current pump status based on sensor feedback.
-     *
-     * @return float Current pump status (abstract units).
+     * @brief Get the current pump status.
+     * @return Current status as an abstract unit.
      */
     float getCurrentPumpStatus() const;
 
@@ -43,38 +45,27 @@ public:
 
 private:
     uint8_t pwmPin;
+    uint8_t dirPin;
     uint8_t sensorPin;
+    uint8_t channel;
+    SemaphoreHandle_t pumpMutex;
     float pumpStatus;
-    uint8_t channel; // LEDC channel number
-
-    // Control limits
-    float maxControl;
-    float minControl;
-
-    // Mutex for thread-safe access to pumpStatus
-    mutable SemaphoreHandle_t pumpMutex;
 
     /**
      * @brief Clamp a value between min and max.
-     *
      * @param value Value to clamp.
      * @param minVal Minimum allowable value.
      * @param maxVal Maximum allowable value.
-     * @return float Clamped value.
+     * @return Clamped value.
      */
     float clamp(float value, float minVal, float maxVal) const;
 
     /**
-     * @brief Map a float from one range to another.
-     *
-     * @param x Input value.
-     * @param in_min Input range minimum.
-     * @param in_max Input range maximum.
-     * @param out_min Output range minimum.
-     * @param out_max Output range maximum.
-     * @return float Mapped value.
+     * @brief Map control value to PWM counts.
+     * @param control Control value in [0.0, 1.0].
+     * @return PWM count value.
      */
     float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) const;
 };
 
-#endif // PUMPCONTROLLER_H
+#endif // PUMP_CONTROLLER_H

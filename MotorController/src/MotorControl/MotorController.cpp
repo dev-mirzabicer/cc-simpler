@@ -3,10 +3,10 @@
 
 // Constructor
 MotorControllerModule::MotorControllerModule()
-    : leftMotor(LEFT_MOTOR_PWM_PIN, ENCODER_LEFT_PIN_A, ENCODER_LEFT_PIN_B, 0),
-      rightMotor(RIGHT_MOTOR_PWM_PIN, ENCODER_RIGHT_PIN_A, ENCODER_RIGHT_PIN_B, 1),
-      pumpIntake(PUMP_INTAKE_PWM_PIN, PUMP_INTAKE_SENSOR_PIN, 2),
-      pumpOutflow(PUMP_OUTFLOW_PWM_PIN, PUMP_OUTFLOW_SENSOR_PIN, 3),
+    : leftMotor(LEFT_MOTOR_PWM_PIN, LEFT_MOTOR_DIR_PIN, ENCODER_LEFT_PIN_A, ENCODER_LEFT_PIN_B, 0),
+      rightMotor(RIGHT_MOTOR_PWM_PIN, RIGHT_MOTOR_DIR_PIN, ENCODER_RIGHT_PIN_A, ENCODER_RIGHT_PIN_B, 1),
+      pumpIntake(PUMP_INTAKE_PWM_PIN, PUMP_INTAKE_DIR_PIN, PUMP_INTAKE_SENSOR_PIN, 2),
+      pumpOutflow(PUMP_OUTFLOW_PWM_PIN, PUMP_OUTFLOW_DIR_PIN, PUMP_OUTFLOW_SENSOR_PIN, 3),
       pidLeftMotor(LEFT_MOTOR_KP, LEFT_MOTOR_KI, LEFT_MOTOR_KD, 100.0f),
       pidRightMotor(RIGHT_MOTOR_KP, RIGHT_MOTOR_KI, RIGHT_MOTOR_KD, 100.0f),
       pidPumpIntake(PUMP_INTAKE_KP, PUMP_INTAKE_KI, PUMP_INTAKE_KD, 50.0f),
@@ -59,7 +59,7 @@ void MotorControllerModule::init()
     {
         if (xSemaphoreTake(commandMutex, portMAX_DELAY) == pdTRUE)
         {
-            latestCommands = VelocityCommand{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            latestCommands = VelocityCommand{0.0f, 0.0f};
             xSemaphoreGive(commandMutex);
         }
     }
@@ -113,56 +113,40 @@ void MotorControllerModule::performControlStep()
     MotorCommand motorCmd = mapVelocityToMotorCommand(currentCommands);
 
     // Apply MotorCommands with PID control
-    applyMotorCommands(motorCmd, dt);
-}
-
-// Map VelocityCommand to MotorCommand
-MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityCommand &velCmd)
-{
-    MotorCommand motorCmd;
-    // Differential drive mapping
-    float v_left = velCmd.linearX - (velCmd.angularZ * TRACK_WIDTH / 2.0f);
-    float v_right = velCmd.linearX + (velCmd.angularZ * TRACK_WIDTH / 2.0f);
-
-    motorCmd.leftMotorSpeed = clamp(v_left, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
-    motorCmd.rightMotorSpeed = clamp(v_right, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
-
-    // Pump control from linearZ
-    // Separate intake and outflow
-    if (velCmd.linearZ > 0.0f)
-    {
-        motorCmd.pumpIntakeControl = clamp(velCmd.linearZ, 0.0f, PUMP_INTAKE_MAX_CONTROL);
-        motorCmd.pumpOutflowControl = 0.0f;
-    }
-    else
-    {
-        motorCmd.pumpOutflowControl = clamp(-velCmd.linearZ, 0.0f, PUMP_OUTFLOW_MAX_CONTROL);
-        motorCmd.pumpIntakeControl = 0.0f;
-    }
-
-    return motorCmd;
-}
-
-// Apply MotorCommand to actuators using PID control
-void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, float dt)
-{
-    // Compute PID outputs
+    // For motors
     float pidOutputLeft = pidLeftMotor.compute(motorCmd.leftMotorSpeed, leftMotor.getCurrentSpeed(), dt);
     float pidOutputRight = pidRightMotor.compute(motorCmd.rightMotorSpeed, rightMotor.getCurrentSpeed(), dt);
-    float pidOutputPumpIntake = pidPumpIntake.compute(motorCmd.pumpIntakeControl, pumpIntake.getCurrentPumpStatus(), dt);
-    float pidOutputPumpOutflow = pidPumpOutflow.compute(motorCmd.pumpOutflowControl, pumpOutflow.getCurrentPumpStatus(), dt);
 
     // Clamp PID outputs to actuator ranges
     pidOutputLeft = clamp(pidOutputLeft, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
     pidOutputRight = clamp(pidOutputRight, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
-    pidOutputPumpIntake = clamp(pidOutputPumpIntake, 0.0f, PUMP_INTAKE_MAX_CONTROL);
-    pidOutputPumpOutflow = clamp(pidOutputPumpOutflow, 0.0f, PUMP_OUTFLOW_MAX_CONTROL);
 
-    // Apply PID outputs to actuators
+    // Apply PID outputs to motors
     leftMotor.setSpeed(pidOutputLeft);
     rightMotor.setSpeed(pidOutputRight);
-    pumpIntake.setControl(pidOutputPumpIntake);
-    pumpOutflow.setControl(pidOutputPumpOutflow);
+
+    // For pumps
+    // Determine which pump to control based on linearZ
+    if (motorCmd.pumpIntakeControl > 0.0f)
+    {
+        float pidOutputPumpIntake = pidPumpIntake.compute(motorCmd.pumpIntakeControl, pumpIntake.getCurrentPumpStatus(), dt);
+        pidOutputPumpIntake = clamp(pidOutputPumpIntake, 0.0f, PUMP_INTAKE_MAX_CONTROL);
+        pumpIntake.setControl(pidOutputPumpIntake);
+        pumpOutflow.setControl(0.0f); // Ensure outflow is off
+    }
+    else if (motorCmd.pumpOutflowControl > 0.0f)
+    {
+        float pidOutputPumpOutflow = pidPumpOutflow.compute(motorCmd.pumpOutflowControl, pumpOutflow.getCurrentPumpStatus(), dt);
+        pidOutputPumpOutflow = clamp(pidOutputPumpOutflow, 0.0f, PUMP_OUTFLOW_MAX_CONTROL);
+        pumpOutflow.setControl(pidOutputPumpOutflow);
+        pumpIntake.setControl(0.0f); // Ensure intake is off
+    }
+    else
+    {
+        // No pump control
+        pumpIntake.setControl(0.0f);
+        pumpOutflow.setControl(0.0f);
+    }
 
     // Update pump status based on sensor readings
     pumpIntake.updateStatus();
@@ -192,7 +176,39 @@ void MotorControllerModule::applyMotorCommands(const MotorCommand &motorCmd, flo
     Serial.println("MotorCommands applied with PID control.");
 }
 
-// Get current status for logging or feedback
+// Map VelocityCommand to MotorCommand
+MotorCommand MotorControllerModule::mapVelocityToMotorCommand(const VelocityCommand &velCmd)
+{
+    MotorCommand motorCmd;
+    // Differential drive mapping
+    float v_left = velCmd.linearX - (velCmd.angularZ * TRACK_WIDTH / 2.0f);
+    float v_right = velCmd.linearX + (velCmd.angularZ * TRACK_WIDTH / 2.0f);
+
+    motorCmd.leftMotorSpeed = clamp(v_left, LEFT_MOTOR_MIN_SPEED, LEFT_MOTOR_MAX_SPEED);
+    motorCmd.rightMotorSpeed = clamp(v_right, RIGHT_MOTOR_MIN_SPEED, RIGHT_MOTOR_MAX_SPEED);
+
+    // Pump control from linearZ
+    // Separate intake and outflow
+    if (velCmd.linearZ > 0.0f)
+    {
+        motorCmd.pumpIntakeControl = clamp(velCmd.linearZ, 0.0f, PUMP_INTAKE_MAX_CONTROL);
+        motorCmd.pumpOutflowControl = 0.0f;
+    }
+    else if (velCmd.linearZ < 0.0f)
+    {
+        motorCmd.pumpOutflowControl = clamp(-velCmd.linearZ, 0.0f, PUMP_OUTFLOW_MAX_CONTROL);
+        motorCmd.pumpIntakeControl = 0.0f;
+    }
+    else
+    {
+        motorCmd.pumpIntakeControl = 0.0f;
+        motorCmd.pumpOutflowControl = 0.0f;
+    }
+
+    return motorCmd;
+}
+
+// Get current status
 Status MotorControllerModule::getStatus() const
 {
     Status status;

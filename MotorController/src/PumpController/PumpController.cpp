@@ -2,11 +2,9 @@
 #include "../config.h"
 
 // Constructor
-PumpController::PumpController(uint8_t pwmPin_, uint8_t sensorPin_, uint8_t channel_)
-    : pwmPin(pwmPin_), sensorPin(sensorPin_), pumpStatus(0.0f),
-      channel(channel_),
-      maxControl(1.0f), // 0.0 to 1.0
-      minControl(0.0f)
+PumpController::PumpController(uint8_t pwmPin_, uint8_t dirPin_, uint8_t sensorPin_, uint8_t channel_)
+    : pwmPin(pwmPin_), dirPin(dirPin_), sensorPin(sensorPin_), channel(channel_),
+      pumpStatus(0.0f)
 {
     // Initialize mutex
     pumpMutex = xSemaphoreCreateMutex();
@@ -27,7 +25,11 @@ void PumpController::init()
     ledcWrite(channel, 0);
 
     pinMode(pwmPin, OUTPUT);
+    pinMode(dirPin, OUTPUT);
     pinMode(sensorPin, INPUT);
+
+    // Initialize direction to forward
+    digitalWrite(dirPin, HIGH); // Assuming forward direction for pump
 
     // Initialize pump status to 0
     {
@@ -45,10 +47,14 @@ void PumpController::init()
 void PumpController::setControl(float control)
 {
     // Clamp control to allowed range
-    control = clamp(control, minControl, maxControl);
+    control = clamp(control, 0.0f, 1.0f);
 
-    // Map control to PWM value (0 to 255 for 8-bit resolution)
-    uint32_t pwmValue = mapFloat(control, 0.0f, maxControl, 0, 255);
+    // Assuming pumps are uni-directional; direction is fixed
+    // Set direction if bidirectional pumps are used in future
+
+    // Map control to PWM value based on resolution
+    // Assuming 8-bit resolution: 0-255
+    uint32_t pwmValue = mapFloat(control, 0.0f, 1.0f, 0, 255);
     pwmValue = (uint32_t)clamp((float)pwmValue, 0.0f, 255.0f);
 
     // Write to PWM channel
@@ -88,7 +94,7 @@ float PumpController::readSensor() const
     // Assuming sensorValue ranges from 0-4095 (12-bit ADC)
     float voltage = sensorValue * (3.3f / 4095.0f); // Convert to voltage
     // Map voltage to pump status (abstract units)
-    float status = mapFloat(clamp(voltage, 0.0f, 3.3f), 0.0f, 3.3f, minControl, maxControl);
+    float status = mapFloat(clamp(voltage, 0.0f, 3.3f), 0.0f, 3.3f, 0.0f, 1.0f);
     return status;
 }
 

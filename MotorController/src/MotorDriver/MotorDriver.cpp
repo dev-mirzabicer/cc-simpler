@@ -2,8 +2,8 @@
 #include "../config.h"
 
 // Constructor
-MotorDriver::MotorDriver(uint8_t pwmPin_, uint8_t encoderPinA_, uint8_t encoderPinB_, uint8_t channel_)
-    : pwmPin(pwmPin_), encoder(encoderPinA_, encoderPinB_),
+MotorDriver::MotorDriver(uint8_t pwmPin_, uint8_t dirPin_, uint8_t encoderPinA_, uint8_t encoderPinB_, uint8_t channel_)
+    : pwmPin(pwmPin_), dirPin(dirPin_), encoder(encoderPinA_, encoderPinB_),
       lastEncoderCount(0), currentSpeed(0.0f),
       wheelCircumference(WHEEL_CIRCUMFERENCE), encoderCountsPerRev(ENCODER_COUNTS_PER_REV),
       channel(channel_)
@@ -14,10 +14,6 @@ MotorDriver::MotorDriver(uint8_t pwmPin_, uint8_t encoderPinA_, uint8_t encoderP
     {
         Serial.println("MotorDriver: Failed to create speedMutex.");
     }
-
-    // Set min and max speed
-    maxSpeed = 1.0f;  // m/s
-    minSpeed = -1.0f; // m/s
 }
 
 // Initialize MotorDriver
@@ -28,10 +24,14 @@ void MotorDriver::init()
     ledcAttachPin(pwmPin, channel);
 
     // Initialize PWM to neutral (1.5 ms pulse)
-    // Map 0 m/s to 1.5 ms pulse -> 3277 counts
-    ledcWrite(channel, 3277);
+    ledcWrite(channel, 4915); // 1.5ms corresponds to ~4915 counts
 
     pinMode(pwmPin, OUTPUT);
+    pinMode(dirPin, OUTPUT);
+
+    // Initialize direction to forward
+    digitalWrite(dirPin, HIGH);
+
     encoder.write(0); // Reset encoder count
     lastEncoderCount = 0;
     currentSpeed = 0.0f;
@@ -45,9 +45,20 @@ void MotorDriver::setSpeed(float speed)
     // Clamp speed to allowed range
     speed = clamp(speed, -1.0f, 1.0f);
 
+    // Determine direction
+    if (speed >= 0.0f)
+    {
+        digitalWrite(dirPin, HIGH); // Forward
+    }
+    else
+    {
+        digitalWrite(dirPin, LOW); // Reverse
+        speed = -speed;            // Make speed positive for PWM mapping
+    }
+
     // Map speed to PWM value
-    uint32_t pwmValue = mapFloat(speed, -1.0f, 1.0f, 1638, 4915); // 1.0m/s -> 2.0ms, -1.0m/s -> 1.0ms
-    pwmValue = (uint32_t)clamp((float)pwmValue, 1638.0f, 4915.0f);
+    uint32_t pwmValue = mapSpeedToPWM(speed);                      // 0 to 65535 for 16-bit
+    pwmValue = (uint32_t)clamp((float)pwmValue, 3277.0f, 6553.0f); // 1.0ms to 2.0ms
 
     // Write to PWM channel
     ledcWrite(channel, pwmValue);
@@ -56,7 +67,7 @@ void MotorDriver::setSpeed(float speed)
     {
         if (xSemaphoreTake(speedMutex, portMAX_DELAY) == pdTRUE)
         {
-            currentSpeed = speed;
+            currentSpeed = (speed * (speed >= 0.0f ? 1.0f : -1.0f));
             xSemaphoreGive(speedMutex);
         }
     }
@@ -66,7 +77,23 @@ void MotorDriver::setSpeed(float speed)
     Serial.println(" m/s");
 }
 
-// Get current motor speed
+// Helper function to map speed to PWM
+uint32_t MotorDriver::mapSpeedToPWM(float speed) const
+{
+    // Map speed from 0.0f to 1.0f m/s to PWM counts from 3277 (1.0ms) to 6553 (2.0ms)
+    // 1ms pulse: 3277 counts
+    // 2ms pulse: 6553 counts
+    // Linear mapping
+
+    // Ensure speed is between 0 and 1.0f
+    speed = clamp(speed, 0.0f, 1.0f);
+
+    // Map speed to PWM counts
+    uint32_t pwmCount = (uint32_t)(3277 + (speed * (6553 - 3277)));
+    return pwmCount;
+}
+
+// Get current speed
 float MotorDriver::getCurrentSpeed() const
 {
     float speed = 0.0f;
@@ -88,19 +115,19 @@ void MotorDriver::updateSpeed(float dt)
     // Calculate rotations per second
     float rotations = ((float)deltaCount / encoderCountsPerRev) / dt; // rev/s
 
-    float speed = (rotations * wheelCircumference); // m/s
+    float speed_m_s = (rotations * wheelCircumference); // m/s
 
     // Update currentSpeed based on encoder
     {
         if (xSemaphoreTake(speedMutex, portMAX_DELAY) == pdTRUE)
         {
-            currentSpeed = speed;
+            currentSpeed = speed_m_s;
             xSemaphoreGive(speedMutex);
         }
     }
 
     Serial.print("Motor speed updated to: ");
-    Serial.print(speed);
+    Serial.print(speed_m_s);
     Serial.println(" m/s");
 }
 
@@ -112,10 +139,4 @@ float MotorDriver::clamp(float value, float minVal, float maxVal) const
     if (value > maxVal)
         return maxVal;
     return value;
-}
-
-// Helper function to map a float from one range to another
-float MotorDriver::mapFloat(float x, float in_min, float in_max, float out_min, float out_max) const
-{
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }

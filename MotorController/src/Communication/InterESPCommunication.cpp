@@ -26,13 +26,13 @@ void InterESPCommunication::init()
     i2cMutex = xSemaphoreCreateMutex();
     if (i2cMutex == NULL)
     {
-        Serial.println("Failed to create I2C mutex.");
+        Serial.println("InterESPCommunication: Failed to create I2C mutex.");
     }
 
     statusBufferMutex = xSemaphoreCreateMutex();
     if (statusBufferMutex == NULL)
     {
-        Serial.println("Failed to create statusBufferMutex.");
+        Serial.println("InterESPCommunication: Failed to create statusBufferMutex.");
     }
 
     // Initialize serializedStatusBuffer with default status
@@ -71,7 +71,7 @@ void InterESPCommunication::handleRequest()
         xSemaphoreGive(statusBufferMutex);
     }
 
-    Serial.println("Status message sent to MainController.");
+    Serial.println("InterESPCommunication: Status message sent to MainController.");
 }
 
 // Handle I2C Receives (receive VelocityCommand or SensorData)
@@ -81,7 +81,7 @@ void InterESPCommunication::handleReceive(int byteCount)
     {
         if (byteCount < sizeof(Message))
         {
-            Serial.println("Received incomplete message.");
+            Serial.println("InterESPCommunication: Received incomplete message.");
             xSemaphoreGive(i2cMutex);
             return;
         }
@@ -102,11 +102,11 @@ void InterESPCommunication::handleReceive(int byteCount)
                 {
                     memcpy(&commands, msg.payload, sizeof(VelocityCommand));
                     enqueueVelocityCommand(commands);
-                    Serial.println("VelocityCommand received and enqueued.");
+                    Serial.println("InterESPCommunication: VelocityCommand received and enqueued.");
                 }
                 else
                 {
-                    Serial.println("VelocityCommand payload size mismatch.");
+                    Serial.println("InterESPCommunication: VelocityCommand payload size mismatch.");
                 }
                 break;
             }
@@ -117,22 +117,22 @@ void InterESPCommunication::handleReceive(int byteCount)
                 {
                     memcpy(&data, msg.payload, sizeof(SensorData));
                     enqueueSensorData(data);
-                    Serial.println("SensorData received and enqueued.");
+                    Serial.println("InterESPCommunication: SensorData received and enqueued.");
                 }
                 else
                 {
-                    Serial.println("SensorData payload size mismatch.");
+                    Serial.println("InterESPCommunication: SensorData payload size mismatch.");
                 }
                 break;
             }
             default:
-                Serial.println("Unknown message type received.");
+                Serial.println("InterESPCommunication: Unknown message type received.");
                 break;
             }
         }
         else
         {
-            Serial.println("Failed to deserialize message.");
+            Serial.println("InterESPCommunication: Failed to deserialize message.");
         }
 
         xSemaphoreGive(i2cMutex);
@@ -209,7 +209,7 @@ bool InterESPCommunication::deserializeMessage(const uint8_t *buffer, size_t len
 {
     if (length < sizeof(Message))
     {
-        Serial.println("Message size mismatch.");
+        Serial.println("InterESPCommunication: Message size mismatch.");
         return false;
     }
 
@@ -219,7 +219,7 @@ bool InterESPCommunication::deserializeMessage(const uint8_t *buffer, size_t len
     uint16_t computedChecksum = calculateCRC16(msg.payload, msg.length);
     if (computedChecksum != msg.checksum)
     {
-        Serial.println("Message checksum mismatch.");
+        Serial.println("InterESPCommunication: Message checksum mismatch.");
         return false;
     }
 
@@ -269,5 +269,44 @@ void InterESPCommunication::sendStatus(const Status &status)
         }
 
         xSemaphoreGive(i2cMutex);
+    }
+}
+
+// Send a message over I2C by enqueuing it (implementation depends on I2C protocol specifics)
+bool InterESPCommunication::sendMessage(const Message &msg)
+{
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE)
+    {
+        // For I2C Slave, sending is handled in handleRequest()
+        // So here, we prepare the serializedStatusBuffer with the new message
+        if (msg.type == MessageType::STATUS_UPDATE)
+        {
+            if (xSemaphoreTake(statusBufferMutex, portMAX_DELAY) == pdTRUE)
+            {
+                memcpy(serializedStatusBuffer, &msg, sizeof(Message));
+                serializedStatusLength = sizeof(Message);
+                xSemaphoreGive(statusBufferMutex);
+            }
+            else
+            {
+                Serial.println("InterESPCommunication: Failed to acquire statusBufferMutex for sending message.");
+                xSemaphoreGive(i2cMutex);
+                return false;
+            }
+        }
+        else
+        {
+            Serial.println("InterESPCommunication: Unsupported message type for sending.");
+            xSemaphoreGive(i2cMutex);
+            return false;
+        }
+
+        xSemaphoreGive(i2cMutex);
+        return true;
+    }
+    else
+    {
+        Serial.println("InterESPCommunication: Failed to acquire i2cMutex for sending message.");
+        return false;
     }
 }

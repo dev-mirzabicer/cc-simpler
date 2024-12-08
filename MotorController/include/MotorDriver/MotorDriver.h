@@ -1,89 +1,77 @@
-#ifndef MOTORDRIVER_H
-#define MOTORDRIVER_H
+// MotorDriver.h
+#ifndef MOTOR_DRIVER_H
+#define MOTOR_DRIVER_H
 
 #include <Arduino.h>
 #include <Encoder.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+/**
+ * @brief The MotorDriver class controls a single motor via PWM and direction control, and reads encoder counts.
+ */
 class MotorDriver
 {
 public:
     /**
      * @brief Constructor for MotorDriver.
-     *
-     * @param pwmPin GPIO pin for PWM control of the motor.
-     * @param encoderPinA GPIO pin A for motor encoder.
-     * @param encoderPinB GPIO pin B for motor encoder.
-     * @param channel_ LEDC channel number for this motor.
+     * @param pwmPin_ GPIO pin for PWM signal.
+     * @param dirPin_ GPIO pin for direction control.
+     * @param encoderPinA_ GPIO pin A for encoder.
+     * @param encoderPinB_ GPIO pin B for encoder.
+     * @param channel_ LEDC channel for PWM.
      */
-    MotorDriver(uint8_t pwmPin, uint8_t encoderPinA, uint8_t encoderPinB, uint8_t channel_);
+    MotorDriver(uint8_t pwmPin_, uint8_t dirPin_, uint8_t encoderPinA_, uint8_t encoderPinB_, uint8_t channel_);
 
     /**
-     * @brief Initialize the MotorDriver hardware and state.
+     * @brief Initialize the motor driver hardware.
      */
     void init();
 
     /**
-     * @brief Set the desired speed for the motor.
-     *
-     * @param speed Desired speed in m/s (clamped within min and max speed).
+     * @brief Set the motor speed.
+     * @param speed Speed in m/s (-1.0 to +1.0). Negative for reverse.
      */
     void setSpeed(float speed);
 
     /**
-     * @brief Get the current speed of the motor based on encoder feedback.
-     *
-     * @return float Current speed in m/s.
+     * @brief Get the current motor speed.
+     * @return Current speed in m/s.
      */
     float getCurrentSpeed() const;
 
     /**
-     * @brief Update the current speed based on encoder counts.
-     *
-     * @param dt Time delta in seconds since the last update.
+     * @brief Update the motor speed based on encoder counts.
+     * @param dt Time delta in seconds.
      */
     void updateSpeed(float dt);
 
 private:
     uint8_t pwmPin;
+    uint8_t dirPin;
     Encoder encoder;
+    uint8_t channel;
+    SemaphoreHandle_t speedMutex;
     long lastEncoderCount;
     float currentSpeed;
-    uint8_t channel; // LEDC channel number
-
-    // Control limits
-    float maxSpeed;
-    float minSpeed;
-
-    // Physical constants
     float wheelCircumference;
     int encoderCountsPerRev;
 
-    // Mutex for thread-safe access to currentSpeed
-    mutable SemaphoreHandle_t speedMutex;
-
     /**
      * @brief Clamp a value between min and max.
-     *
      * @param value Value to clamp.
      * @param minVal Minimum allowable value.
      * @param maxVal Maximum allowable value.
-     * @return float Clamped value.
+     * @return Clamped value.
      */
     float clamp(float value, float minVal, float maxVal) const;
 
     /**
-     * @brief Map a float from one range to another.
-     *
-     * @param x Input value.
-     * @param in_min Input range minimum.
-     * @param in_max Input range maximum.
-     * @param out_min Output range minimum.
-     * @param out_max Output range maximum.
-     * @return float Mapped value.
+     * @brief Map speed to PWM counts.
+     * @param speed Speed in m/s (0.0 to 1.0).
+     * @return PWM count value.
      */
-    float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) const;
+    uint32_t mapSpeedToPWM(float speed) const;
 };
 
-#endif // MOTORDRIVER_H
+#endif // MOTOR_DRIVER_H

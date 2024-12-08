@@ -1,14 +1,20 @@
+// InterESPCommunication.h
 #ifndef INTERESP_COMMUNICATION_H
 #define INTERESP_COMMUNICATION_H
 
 #include <Arduino.h>
 #include <Wire.h>
-#include "../CommonMessageDefinitions/Message.h"
+#include "../Common/CommonMessageDefinitions.h"
 #include "../Utils/Utilities.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <queue>
 
+/**
+ * @brief The InterESPCommunication class manages I2C communication between ESP modules.
+ *
+ * It handles receiving VelocityCommands and SensorData, as well as sending Status updates.
+ */
 class InterESPCommunication
 {
 public:
@@ -17,6 +23,14 @@ public:
     bool receiveVelocityCommands(VelocityCommand &commands);
     bool receiveSensorData(SensorData &data);
     void sendStatus(const Status &status);
+
+    /**
+     * @brief Send a message over I2C.
+     *
+     * @param msg The message to send.
+     * @return bool true if message was successfully enqueued for sending, false otherwise.
+     */
+    bool sendMessage(const Message &msg);
 
 private:
     SemaphoreHandle_t i2cMutex;          // Mutex for protecting I2C operations
